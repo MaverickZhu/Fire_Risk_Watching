@@ -142,7 +142,70 @@ export interface ModuleCard {
   collapsed: boolean
 }
 
-export type StageTab = '总览' | '行政区专题' | '行业专题' | '应急处置' | '安保模式'
+export type StageTab = '总览' | '行政区专题' | '行业专题' | '应急处置' | '安保模式' | '知识图谱'
+
+export type KnowledgeGraphNodeType =
+  | 'module'
+  | 'source-system'
+  | 'district'
+  | 'street'
+  | 'industry'
+  | 'risk-object'
+  | 'incident'
+  | 'inspection'
+  | 'security-task'
+  | 'security-force'
+  | 'layer'
+  | 'risk-signal'
+  | 'metric'
+
+export type KnowledgeGraphEdgeRelation =
+  | '属于模块'
+  | '位于'
+  | '属于行业'
+  | '来源于'
+  | '触发'
+  | '关联隐患'
+  | '处置对象'
+  | '调度力量'
+  | '覆盖区域'
+  | '共享风险信号'
+  | '支撑研判'
+
+export interface KnowledgeGraphNode {
+  id: string
+  label: string
+  type: KnowledgeGraphNodeType
+  category: string
+  sourceSystems: string[]
+  sourceRefs: string[]
+  density: number
+  metadata: Record<string, string | number | boolean | string[] | undefined>
+  linkedEntityId?: string
+}
+
+export interface KnowledgeGraphEdge {
+  id: string
+  source: string
+  target: string
+  relation: KnowledgeGraphEdgeRelation
+  weight: number
+  sourceSystems: string[]
+  evidenceCount: number
+  metadata: Record<string, string | number | boolean | string[] | undefined>
+}
+
+export interface KnowledgeGraphSnapshot {
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  stats: {
+    nodeCount: number
+    edgeCount: number
+    sourceSystemCount: number
+    highDensityNodeCount: number
+  }
+  generatedAt: string
+}
 
 export interface IndustryProfile {
   industry: Industry

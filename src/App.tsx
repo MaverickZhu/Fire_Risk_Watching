@@ -15,6 +15,7 @@ import {
   Layers,
   MapPinned,
   Mic,
+  Network,
   PanelLeft,
   PhoneCall,
   Plus,
@@ -29,11 +30,13 @@ import {
   Video,
 } from 'lucide-react'
 import './App.css'
+import { KnowledgeGraphView } from './components/KnowledgeGraphView'
 import { ThreeRiskMap } from './components/ThreeRiskMap'
 import { TrendChart } from './components/TrendChart'
 import { askAI, checkAIHealth, startVoiceInput } from './services/aiAdapter'
 import { emergencyIncidents, fireInspectionRecords } from './data/emergencyIncidents'
 import { industryProfiles, knownIndustryUnits } from './data/knownIndustryUnits'
+import { buildKnowledgeGraphSnapshot } from './data/knowledgeGraph'
 import { districtShapes, layerDefinitions, moduleCards, riskObjects } from './data/mockData'
 import { defaultSecurityLayerState, securityForcePoints, securityTasks } from './data/securityTasks'
 import type {
@@ -46,6 +49,9 @@ import type {
   FireInspectionRecord,
   IndustryScope,
   IndustrySelection,
+  KnowledgeGraphEdge,
+  KnowledgeGraphNode,
+  KnowledgeGraphSnapshot,
   LayerDefinition,
   ModuleCard,
   RiskLevel,
@@ -58,7 +64,19 @@ import type {
 } from './types'
 
 type AspectMode = '16:9' | '32:9'
-const stageTabs: StageTab[] = ['总览', '行政区专题', '行业专题', '应急处置', '安保模式']
+type AIContextOverride = Partial<{
+  activeStage: StageTab
+  selectedDistrict: string
+  overviewDistrict: string
+  selectedIndustry: IndustrySelection
+  industryScope: IndustryScope
+  selectedIndustryDistrict: string
+  selectedIndustryUnit: RiskObject | null
+  selectedObject: RiskObject | null
+  riskObjects: RiskObject[]
+  selectedRegion: string
+}>
+const stageTabs: StageTab[] = ['总览', '行政区专题', '行业专题', '应急处置', '安保模式', '知识图谱']
 
 const levelLabel: Record<RiskLevel, string> = {
   medium: '中',
@@ -138,12 +156,21 @@ function App() {
   const [securityVideoForceIds, setSecurityVideoForceIds] = useState<string[]>([securityForcePoints[1].id, securityForcePoints[2].id, securityForcePoints[3].id])
   const [securityVideoDispatched, setSecurityVideoDispatched] = useState(false)
   const [securityVideoOpen, setSecurityVideoOpen] = useState(false)
+  const [selectedGraphNodeId, setSelectedGraphNodeId] = useState('')
+  const [selectedGraphEdgeId, setSelectedGraphEdgeId] = useState('')
+  const [graphSearch, setGraphSearch] = useState('')
+  const [graphFilters, setGraphFilters] = useState<{ nodeTypes: string[]; relations: string[]; minDensity: number }>({
+    nodeTypes: [],
+    relations: [],
+    minDensity: 1,
+  })
 
   const visibleLayers = layers.filter((layer) => layer.visible)
   const isOverviewStage = activeStage === '总览'
   const isIndustryStage = activeStage === '行业专题'
   const isEmergencyStage = activeStage === '应急处置'
   const isSecurityStage = activeStage === '安保模式'
+  const isKnowledgeGraphStage = activeStage === '知识图谱'
   const industryFilteredUnits = useMemo(() => {
     return selectedIndustry === '全部行业'
       ? knownIndustryUnits
@@ -214,6 +241,22 @@ function App() {
       ...securityRiskObjects.map((object) => ({ ...object, id: `security-risk-${object.id}` })),
     ]
   }, [securityRiskObjects, visibleSecurityForces])
+  const knowledgeGraphSnapshot = useMemo(() => buildKnowledgeGraphSnapshot({
+    districts: districtShapes,
+    layers,
+    riskObjects,
+    industryUnits: knownIndustryUnits,
+    industryProfiles,
+    incidents: emergencyIncidents,
+    inspectionRecords: fireInspectionRecords,
+    securityTasks,
+    securityForces,
+  }), [layers, securityForces])
+  const selectedGraphNode = knowledgeGraphSnapshot.nodes.find((node) => node.id === selectedGraphNodeId)
+  const selectedGraphEdge = knowledgeGraphSnapshot.edges.find((edge) => edge.id === selectedGraphEdgeId)
+  const graphPathEdges = selectedGraphNode
+    ? knowledgeGraphSnapshot.edges.filter((edge) => edge.source === selectedGraphNode.id || edge.target === selectedGraphNode.id).slice(0, 10)
+    : knowledgeGraphSnapshot.edges.slice(0, 10)
 
   const activeOverviewDistrict = districtShapes.find((item) => item.name === overviewDistrict)
   const cityRiskScore = calculateCityRiskScore()
@@ -234,33 +277,60 @@ function App() {
     prompt = question,
     operation = lastUserOperation,
     executeTools = true,
+    contextOverride: AIContextOverride = {},
   ) => {
     setAiLoading(true)
-    const result = await askAI({
-      selectedRegion: isOverviewStage
-        ? overviewDistrict || '全市'
-        : isSecurityStage
+    const stageForAI = contextOverride.activeStage || activeStage
+    const selectedDistrictForAI = contextOverride.selectedDistrict ?? selectedDistrict
+    const overviewDistrictForAI = contextOverride.overviewDistrict ?? overviewDistrict
+    const selectedIndustryForAI = contextOverride.selectedIndustry ?? selectedIndustry
+    const industryScopeForAI = contextOverride.industryScope ?? industryScope
+    const selectedIndustryDistrictForAI = contextOverride.selectedIndustryDistrict ?? selectedIndustryDistrict
+    const selectedIndustryUnitForAI = contextOverride.selectedIndustryUnit ?? selectedIndustryUnit
+    const selectedObjectForAI = contextOverride.selectedObject ?? selectedObject
+    const isOverviewForAI = stageForAI === '总览'
+    const isIndustryForAI = stageForAI === '行业专题'
+    const isEmergencyForAI = stageForAI === '应急处置'
+    const isSecurityForAI = stageForAI === '安保模式'
+    const isKnowledgeGraphForAI = stageForAI === '知识图谱'
+    const riskObjectsForAI = contextOverride.riskObjects || (activeObjects.length ? activeObjects : riskObjects)
+    const selectedRegionForAI = contextOverride.selectedRegion || (
+      isOverviewForAI
+        ? overviewDistrictForAI || '全市'
+        : isSecurityForAI
           ? selectedSecurityTask.venueName
-        : isIndustryStage
-          ? selectedIndustryDistrict || selectedDistrict
-          : selectedDistrict,
+        : isKnowledgeGraphForAI
+          ? selectedGraphNode?.label || '上海消防知识图谱'
+        : isIndustryForAI
+          ? selectedIndustryUnitForAI?.name || selectedIndustryDistrictForAI || selectedDistrictForAI
+          : selectedDistrictForAI
+    )
+
+    const result = await askAI({
+      selectedRegion: selectedRegionForAI,
       activeLayers: visibleLayers.map((layer) => layer.id),
-      riskObjects: activeObjects.length ? activeObjects : riskObjects,
+      riskObjects: riskObjectsForAI,
       timeRange: '今日',
       question: prompt,
       inputMode,
-      stage: activeStage,
+      stage: stageForAI,
       operation,
-      selectedObject: isEmergencyStage ? selectedIncident.unit : isIndustryStage ? selectedIndustryUnit : selectedObject,
+      selectedObject: isEmergencyForAI ? selectedIncident.unit : isIndustryForAI ? selectedIndustryUnitForAI : selectedObjectForAI,
       uiState: {
         aspectMode,
-        activeStage,
-        selectedDistrict,
-        overviewDistrict,
-        selectedIndustry,
-        industryScope,
-        selectedIndustryDistrict,
-        selectedIndustryUnitId: selectedIndustryUnit?.id,
+        activeStage: stageForAI,
+        selectedDistrict: selectedDistrictForAI,
+        overviewDistrict: overviewDistrictForAI,
+        selectedIndustry: selectedIndustryForAI,
+        industryScope: industryScopeForAI,
+        selectedIndustryDistrict: selectedIndustryDistrictForAI,
+        selectedIndustryUnitId: selectedIndustryUnitForAI?.id,
+        selectedIndustryUnitName: selectedIndustryUnitForAI?.name,
+        selectedObjectName: selectedObjectForAI?.name,
+        selectedGraphNode: selectedGraphNode ? summarizeGraphNode(selectedGraphNode) : undefined,
+        selectedGraphEdge: selectedGraphEdge ? summarizeGraphEdge(selectedGraphEdge) : undefined,
+        graphFilters,
+        graphPathSummary: graphPathEdges.slice(0, 6).map((edge) => `${edge.source} ${edge.relation} ${edge.target}`),
         selectedIncidentId: selectedIncident.id,
         incidentPreset,
         incidentQuery,
@@ -504,6 +574,9 @@ function App() {
       setSelectedDistrict(selectedSecurityTask.district === '全市' ? '' : selectedSecurityTask.district)
       setQuestion(`请研判${selectedSecurityTask.name}的消防力量覆盖、圈层风险和安保勤务重点`)
     }
+    if (tab === '知识图谱') {
+      setQuestion('请基于当前知识图谱分析上海消防风险监测预警的数据关联、核心风险链路和跨模块处置建议')
+    }
   }
 
   const handleDistrictSelect = (district: string) => {
@@ -698,6 +771,7 @@ function App() {
     }
 
     if (activeStage === '行业专题' || object.id.startsWith('u-')) {
+      const prompt = `分析${object.name}的行业风险画像、证据片段和处置建议`
       setSelectedObject(object)
       setSelectedIndustryUnit(object)
       setSelectedIndustry(object.industry)
@@ -705,7 +779,22 @@ function App() {
       setSelectedDistrict(object.district)
       setIndustryScope('unit')
       setActiveStage('行业专题')
-      window.setTimeout(() => void runAI('object-click', `分析${object.name}的行业风险画像、证据片段和处置建议`), 0)
+      setQuestion(prompt)
+      setLastUserOperation(`选择行业单位：${object.name}`)
+      window.setTimeout(
+        () => void runAI('object-click', prompt, `选择行业单位：${object.name}`, true, {
+          activeStage: '行业专题',
+          selectedDistrict: object.district,
+          selectedIndustry: object.industry,
+          industryScope: 'unit',
+          selectedIndustryDistrict: object.district,
+          selectedIndustryUnit: object,
+          selectedObject: object,
+          selectedRegion: object.name,
+          riskObjects: [object],
+        }),
+        0,
+      )
       return
     }
 
@@ -737,6 +826,126 @@ function App() {
     }
 
     setLastUserOperation(`点击告警闭环时间轴：${object.name}`)
+  }
+
+  const handleGraphNodeSelect = (node: KnowledgeGraphNode) => {
+    setSelectedGraphNodeId(node.id)
+    setSelectedGraphEdgeId('')
+    setGraphSearch(node.label)
+    setQuestion(`分析${node.label}在知识图谱中的风险来源、跨模块关系、证据链和处置建议`)
+    setLastUserOperation(`点击知识图谱节点：${node.label}`)
+
+    if (node.type === 'district') {
+      setSelectedDistrict(String(node.metadata.district || node.label))
+      return
+    }
+    if (node.type === 'industry') {
+      if (isIndustrySelection(node.label)) setSelectedIndustry(node.label)
+      return
+    }
+    if (node.type === 'risk-object') {
+      const object = findRiskObjectByGraphNode(node)
+      if (object) {
+        setSelectedObject(object)
+        setSelectedDistrict(object.district)
+        if (object.id.startsWith('u-')) {
+          setSelectedIndustryUnit(object)
+          setSelectedIndustry(object.industry)
+          setSelectedIndustryDistrict(object.district)
+          setIndustryScope('unit')
+        }
+      }
+      return
+    }
+    if (node.type === 'incident') {
+      const incident = emergencyIncidents.find((item) => `incident:${item.id}` === node.id || item.id === node.linkedEntityId)
+      if (incident) {
+        setSelectedIncident(incident)
+        setSelectedDistrict(incident.district)
+        setSelectedObject(incidentToRiskObject(incident))
+      }
+      return
+    }
+    if (node.type === 'security-task') {
+      const task = securityTasks.find((item) => `security-task:${item.id}` === node.id || item.id === node.linkedEntityId)
+      if (task) {
+        setSelectedSecurityTaskId(task.id)
+        setSelectedDistrict(task.district === '全市' ? '' : task.district)
+      }
+      return
+    }
+    if (node.type === 'security-force') {
+      const force = securityForces.find((item) => `security-force:${item.id}` === node.id || item.id === node.linkedEntityId)
+      if (force) {
+        setSelectedSecurityTaskId(force.taskId)
+        setSelectedSecurityForceId(force.id)
+        setSelectedDistrict(force.district)
+      }
+    }
+  }
+
+  const handleGraphEdgeSelect = (edge: KnowledgeGraphEdge) => {
+    setSelectedGraphEdgeId(edge.id)
+    setQuestion(`分析知识图谱关系“${edge.relation}”的来源系统、证据数量、关联强度和处置建议`)
+    setLastUserOperation(`点击知识图谱关系：${edge.relation}`)
+  }
+
+  const handleGraphNodeJump = (node: KnowledgeGraphNode) => {
+    if (node.type === 'district') {
+      setActiveStage('行政区专题')
+      setSelectedDistrict(node.label)
+      return
+    }
+    if (node.type === 'industry') {
+      if (isIndustrySelection(node.label)) setSelectedIndustry(node.label)
+      setIndustryScope('city')
+      setActiveStage('行业专题')
+      return
+    }
+    if (node.type === 'risk-object') {
+      const object = findRiskObjectByGraphNode(node)
+      if (!object) return
+      if (object.id.startsWith('u-')) {
+        setSelectedObject(object)
+        setSelectedIndustryUnit(object)
+        setSelectedIndustry(object.industry)
+        setSelectedIndustryDistrict(object.district)
+        setSelectedDistrict(object.district)
+        setIndustryScope('unit')
+        setActiveStage('行业专题')
+        return
+      }
+      setSelectedObject(object)
+      setSelectedDistrict(object.district)
+      setActiveStage('行政区专题')
+      return
+    }
+    if (node.type === 'incident') {
+      const incident = emergencyIncidents.find((item) => `incident:${item.id}` === node.id || item.id === node.linkedEntityId)
+      if (!incident) return
+      handleIncidentSelect(incident)
+      return
+    }
+    if (node.type === 'security-task') {
+      const task = securityTasks.find((item) => `security-task:${item.id}` === node.id || item.id === node.linkedEntityId)
+      if (task) handleSecurityTaskSelect(task.id)
+      return
+    }
+    if (node.type === 'security-force') {
+      const force = securityForces.find((item) => `security-force:${item.id}` === node.id || item.id === node.linkedEntityId)
+      if (!force) return
+      setSelectedSecurityTaskId(force.taskId)
+      setSelectedSecurityForceId(force.id)
+      setSelectedDistrict(force.district)
+      setActiveStage('安保模式')
+    }
+  }
+
+  const findRiskObjectByGraphNode = (node: KnowledgeGraphNode) => {
+    const id = String(node.linkedEntityId || node.id.replace(/^risk:/, ''))
+    return knownIndustryUnits.find((object) => object.id === id)
+      || riskObjects.find((object) => object.id === id)
+      || emergencyIncidents.find((incident) => incident.unit.id === id)?.unit
   }
 
   const handleIndustrySelect = (industry: IndustrySelection) => {
@@ -776,9 +985,11 @@ function App() {
             <DraggableCard
               card={cards[0]}
               onToggle={toggleCard}
-              titleOverride={isSecurityStage ? '安保任务概览' : undefined}
+              titleOverride={isKnowledgeGraphStage ? '图谱态势概览' : isSecurityStage ? '安保任务概览' : undefined}
             >
-              {isSecurityStage ? (
+              {isKnowledgeGraphStage ? (
+                <KnowledgeGraphOverviewPanel snapshot={knowledgeGraphSnapshot} selectedNode={selectedGraphNode} />
+              ) : isSecurityStage ? (
                 <SecurityTaskPanel
                   task={selectedSecurityTask}
                   tasks={securityTasks}
@@ -806,9 +1017,15 @@ function App() {
             <DraggableCard
               card={cards[1]}
               onToggle={toggleCard}
-              titleOverride={isSecurityStage ? '安保力量配置' : undefined}
+              titleOverride={isKnowledgeGraphStage ? '节点类型筛选' : isSecurityStage ? '安保力量配置' : undefined}
             >
-              {isSecurityStage ? (
+              {isKnowledgeGraphStage ? (
+                <KnowledgeGraphFilterPanel
+                  filters={graphFilters}
+                  nodes={knowledgeGraphSnapshot.nodes}
+                  onChange={setGraphFilters}
+                />
+              ) : isSecurityStage ? (
                 <SecurityForceEditor
                   forces={taskSecurityForces}
                   selectedForceId={selectedSecurityForce?.id || ''}
@@ -843,9 +1060,19 @@ function App() {
             <DraggableCard
               card={cards[2]}
               onToggle={toggleCard}
-              titleOverride={isSecurityStage ? '安保图层编排' : undefined}
+              titleOverride={isKnowledgeGraphStage ? '图谱检索与关系' : isSecurityStage ? '安保图层编排' : undefined}
             >
-              {isSecurityStage ? (
+              {isKnowledgeGraphStage ? (
+                <KnowledgeGraphSearchPanel
+                  search={graphSearch}
+                  setSearch={setGraphSearch}
+                  filters={graphFilters}
+                  nodes={knowledgeGraphSnapshot.nodes}
+                  edges={knowledgeGraphSnapshot.edges}
+                  onChange={setGraphFilters}
+                  onSelectNode={handleGraphNodeSelect}
+                />
+              ) : isSecurityStage ? (
                 <SecurityLayerPanel layers={securityLayers} onToggle={handleSecurityLayerToggle} />
               ) : isEmergencyStage ? (
                 <EmergencyLayerPanel incidents={emergencyIncidents} />
@@ -874,25 +1101,37 @@ function App() {
                 </button>
               ))}
             </div>
-            <ThreeRiskMap
-              districts={districtShapes}
-              layers={layers}
-              objects={mapObjects}
-              selectedDistrict={isOverviewStage ? overviewDistrict : selectedDistrict}
-              mapMode={activeStage === '行政区专题' ? 'district' : activeStage === '行业专题' ? 'industry' : activeStage === '应急处置' ? 'emergency' : activeStage === '安保模式' ? 'security' : 'overview'}
-              selectedIndustry={selectedIndustry}
-              industryScope={industryScope}
-              selectedObjectId={selectedObject?.id}
-              selectedIndustryUnitId={selectedIndustryUnit?.id}
-              selectedEmergencyObjectId={selectedIncident.id}
-              selectedSecurityForceId={selectedSecurityForce?.id}
-              securityTask={selectedSecurityTask}
-              showSecurityRings={securityLayers.securityRings}
-              onSelectDistrict={handleDistrictSelect}
-              onSelectIndustryDistrict={handleIndustryDistrictSelect}
-              onSelectEmergencyDistrict={handleEmergencyDistrictSelect}
-              onSelectObject={handleObjectSelect}
-            />
+            {isKnowledgeGraphStage ? (
+              <KnowledgeGraphView
+                snapshot={knowledgeGraphSnapshot}
+                filters={graphFilters}
+                search={graphSearch}
+                selectedNodeId={selectedGraphNodeId}
+                selectedEdgeId={selectedGraphEdgeId}
+                onSelectNode={handleGraphNodeSelect}
+                onSelectEdge={handleGraphEdgeSelect}
+              />
+            ) : (
+              <ThreeRiskMap
+                districts={districtShapes}
+                layers={layers}
+                objects={mapObjects}
+                selectedDistrict={isOverviewStage ? overviewDistrict : selectedDistrict}
+                mapMode={activeStage === '行政区专题' ? 'district' : activeStage === '行业专题' ? 'industry' : activeStage === '应急处置' ? 'emergency' : activeStage === '安保模式' ? 'security' : 'overview'}
+                selectedIndustry={selectedIndustry}
+                industryScope={industryScope}
+                selectedObjectId={selectedObject?.id}
+                selectedIndustryUnitId={selectedIndustryUnit?.id}
+                selectedEmergencyObjectId={selectedIncident.id}
+                selectedSecurityForceId={selectedSecurityForce?.id}
+                securityTask={selectedSecurityTask}
+                showSecurityRings={securityLayers.securityRings}
+                onSelectDistrict={handleDistrictSelect}
+                onSelectIndustryDistrict={handleIndustryDistrictSelect}
+                onSelectEmergencyDistrict={handleEmergencyDistrictSelect}
+                onSelectObject={handleObjectSelect}
+              />
+            )}
             {isSecurityStage && securityVideoOpen && (
               <SecurityVideoCommandOverlay
                 forces={taskSecurityForces}
@@ -916,7 +1155,7 @@ function App() {
                 onToggleEnlarge={(videoId) => setEmergencyVideoEnlargedId((current) => (current === videoId ? '' : videoId))}
               />
             )}
-            <SelectedObjectCard object={isOverviewStage || isSecurityStage ? null : isEmergencyStage ? selectedIncident.unit : isIndustryStage ? selectedIndustryUnit : selectedObject} />
+            <SelectedObjectCard object={isOverviewStage || isSecurityStage || isKnowledgeGraphStage ? null : isEmergencyStage ? selectedIncident.unit : isIndustryStage ? selectedIndustryUnit : selectedObject} />
           </section>
 
           <aside className="panel-stack right-stack">
@@ -937,7 +1176,15 @@ function App() {
               onToggle={toggleCard}
               titleOverride={isSecurityStage ? '力量画像与图传' : undefined}
             >
-              {isSecurityStage ? (
+              {isKnowledgeGraphStage ? (
+                <KnowledgeGraphDetailPanel
+                  node={selectedGraphNode}
+                  edge={selectedGraphEdge}
+                  edges={knowledgeGraphSnapshot.edges}
+                  nodes={knowledgeGraphSnapshot.nodes}
+                  onJump={handleGraphNodeJump}
+                />
+              ) : isSecurityStage ? (
                 <SecurityForceProfile
                   force={selectedSecurityForce}
                   task={selectedSecurityTask}
@@ -972,7 +1219,9 @@ function App() {
                   onToggle={toggleCard}
                   titleOverride={isSecurityStage ? '安保力量清单' : undefined}
                 >
-                  {isSecurityStage ? (
+                  {isKnowledgeGraphStage ? (
+                    <KnowledgeGraphSourcePanel nodes={knowledgeGraphSnapshot.nodes} />
+                  ) : isSecurityStage ? (
                     <SecurityForceEditor
                       forces={taskSecurityForces}
                       selectedForceId={selectedSecurityForce?.id || ''}
@@ -1009,7 +1258,9 @@ function App() {
                   onToggle={toggleCard}
                   titleOverride={isSecurityStage ? '安保覆盖能力' : undefined}
                 >
-                  {isSecurityStage ? (
+                  {isKnowledgeGraphStage ? (
+                    <KnowledgeGraphRelationRank edges={knowledgeGraphSnapshot.edges} />
+                  ) : isSecurityStage ? (
                     <SecurityCoveragePanel task={selectedSecurityTask} forces={taskSecurityForces} risks={securityRiskObjects} />
                   ) : isEmergencyStage ? <EmergencyResourcePanel incident={selectedIncident} /> : <ResourceCoverage />}
                 </DraggableCard>
@@ -1019,7 +1270,13 @@ function App() {
         </section>
 
         <footer className="event-dock">
-          {isSecurityStage ? (
+          {isKnowledgeGraphStage ? (
+            <KnowledgeGraphEvidenceTimeline
+              edges={graphPathEdges}
+              nodes={knowledgeGraphSnapshot.nodes}
+              selectedNode={selectedGraphNode}
+            />
+          ) : isSecurityStage ? (
             <SecurityTimeline task={selectedSecurityTask} forces={taskSecurityForces} />
           ) : isEmergencyStage ? (
             <EmergencyTimeline incidents={[selectedIncident]} />
@@ -2159,6 +2416,256 @@ function ResourceCoverage() {
   )
 }
 
+function KnowledgeGraphOverviewPanel({
+  snapshot,
+  selectedNode,
+}: {
+  snapshot: KnowledgeGraphSnapshot
+  selectedNode?: KnowledgeGraphNode
+}) {
+  const topNodes = snapshot.nodes.slice(0, 4)
+  return (
+    <div className="kg-overview-panel">
+      <div className="kg-stat-grid">
+        <span>节点 <strong>{snapshot.stats.nodeCount}</strong></span>
+        <span>关系 <strong>{snapshot.stats.edgeCount}</strong></span>
+        <span>来源 <strong>{snapshot.stats.sourceSystemCount}</strong></span>
+        <span>高密 <strong>{snapshot.stats.highDensityNodeCount}</strong></span>
+      </div>
+      <div className="kg-focus-card">
+        <Network size={20} />
+        <div>
+          <span>{selectedNode ? '当前节点' : '图谱生成时间'}</span>
+          <strong>{selectedNode?.label || snapshot.generatedAt}</strong>
+        </div>
+      </div>
+      <div className="kg-mini-list">
+        {topNodes.map((node) => (
+          <span key={node.id}>
+            <i>{nodeTypeLabel(node.type)}</i>
+            {node.label}
+            <strong>{node.density.toFixed(1)}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function KnowledgeGraphFilterPanel({
+  filters,
+  nodes,
+  onChange,
+}: {
+  filters: { nodeTypes: string[]; relations: string[]; minDensity: number }
+  nodes: KnowledgeGraphNode[]
+  onChange: (filters: { nodeTypes: string[]; relations: string[]; minDensity: number }) => void
+}) {
+  const nodeTypes = [...new Set(nodes.map((node) => node.type))]
+  return (
+    <div className="kg-filter-panel">
+      <label>
+        关联密度阈值
+        <input
+          max={10}
+          min={1}
+          type="range"
+          value={filters.minDensity}
+          onChange={(event) => onChange({ ...filters, minDensity: Number(event.target.value) })}
+        />
+        <strong>{filters.minDensity}</strong>
+      </label>
+      <div className="kg-chip-grid">
+        {nodeTypes.map((type) => (
+          <button
+            className={filters.nodeTypes.includes(type) ? 'active' : ''}
+            key={type}
+            type="button"
+            onClick={() => onChange({ ...filters, nodeTypes: toggleValue(filters.nodeTypes, type) })}
+          >
+            {nodeTypeLabel(type)}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function KnowledgeGraphSearchPanel({
+  search,
+  setSearch,
+  filters,
+  nodes,
+  edges,
+  onChange,
+  onSelectNode,
+}: {
+  search: string
+  setSearch: (value: string) => void
+  filters: { nodeTypes: string[]; relations: string[]; minDensity: number }
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  onChange: (filters: { nodeTypes: string[]; relations: string[]; minDensity: number }) => void
+  onSelectNode: (node: KnowledgeGraphNode) => void
+}) {
+  const relations = [...new Set(edges.map((edge) => edge.relation))]
+  const matchedNodes = search.trim()
+    ? nodes.filter((node) => `${node.label}${node.category}${node.sourceSystems.join('')}`.includes(search.trim())).slice(0, 6)
+    : []
+  return (
+    <div className="kg-search-panel">
+      <div className="kg-search-box">
+        <Search size={15} />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点、来源、对象" />
+      </div>
+      {!!matchedNodes.length && (
+        <div className="kg-search-results">
+          {matchedNodes.map((node) => (
+            <button key={node.id} type="button" onClick={() => onSelectNode(node)}>
+              <span>{node.label}</span>
+              <strong>{nodeTypeLabel(node.type)}</strong>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="kg-chip-grid relation-grid">
+        {relations.map((relation) => (
+          <button
+            className={filters.relations.includes(relation) ? 'active' : ''}
+            key={relation}
+            type="button"
+            onClick={() => onChange({ ...filters, relations: toggleValue(filters.relations, relation) })}
+          >
+            {relation}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function KnowledgeGraphDetailPanel({
+  node,
+  edge,
+  nodes,
+  edges,
+  onJump,
+}: {
+  node?: KnowledgeGraphNode
+  edge?: KnowledgeGraphEdge
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  onJump: (node: KnowledgeGraphNode) => void
+}) {
+  const nodeById = new Map(nodes.map((item) => [item.id, item]))
+  if (edge) {
+    return (
+      <div className="kg-detail-panel">
+        <div className="detail-hero">
+          <span>关系画像</span>
+          <strong>{edge.relation}</strong>
+          <em>{edge.sourceSystems.join('、')}</em>
+        </div>
+        <div className="kg-relation-line">
+          <span>{nodeById.get(edge.source)?.label || edge.source}</span>
+          <strong>{edge.relation}</strong>
+          <span>{nodeById.get(edge.target)?.label || edge.target}</span>
+        </div>
+        <div className="kg-meta-grid">
+          <span>权重 <strong>{edge.weight.toFixed(1)}</strong></span>
+          <span>证据 <strong>{edge.evidenceCount}</strong></span>
+          <span>来源 <strong>{edge.sourceSystems.length}</strong></span>
+        </div>
+      </div>
+    )
+  }
+
+  if (!node) {
+    return <p className="empty-text">请选择图谱节点或关系，查看来源、密度与跨模块证据链。</p>
+  }
+
+  const relatedEdges = edges.filter((item) => item.source === node.id || item.target === node.id).slice(0, 6)
+  const canJump = ['district', 'industry', 'risk-object', 'incident', 'security-task', 'security-force'].includes(node.type)
+
+  return (
+    <div className="kg-detail-panel">
+      <div className="detail-hero">
+        <span>{nodeTypeLabel(node.type)}画像</span>
+        <strong>{node.label}</strong>
+        <em>{node.category} · 关联密度 {node.density.toFixed(1)}</em>
+      </div>
+      <div className="kg-meta-grid">
+        <span>来源系统 <strong>{node.sourceSystems.length}</strong></span>
+        <span>来源引用 <strong>{node.sourceRefs.length}</strong></span>
+        <span>关联边 <strong>{relatedEdges.length}</strong></span>
+      </div>
+      <div className="evidence-list">
+        <strong>元数据来源</strong>
+        <p>{node.sourceSystems.join('、')}</p>
+        {Object.entries(node.metadata).slice(0, 5).map(([key, value]) => (
+          <p key={key}>{key}: {Array.isArray(value) ? value.join('、') : String(value)}</p>
+        ))}
+      </div>
+      <div className="kg-edge-list">
+        {relatedEdges.map((item) => (
+          <span key={item.id}>{item.relation} · {nodeById.get(item.source === node.id ? item.target : item.source)?.label}</span>
+        ))}
+      </div>
+      {canJump && <button className="kg-jump-button" type="button" onClick={() => onJump(node)}>跳转关联专题</button>}
+    </div>
+  )
+}
+
+function KnowledgeGraphSourcePanel({ nodes }: { nodes: KnowledgeGraphNode[] }) {
+  const counts = new Map<string, number>()
+  nodes.forEach((node) => node.sourceSystems.forEach((source) => counts.set(source, (counts.get(source) || 0) + 1)))
+  return (
+    <div className="kg-source-panel">
+      {[...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([source, count]) => (
+        <span key={source}>{source}<strong>{count}</strong></span>
+      ))}
+    </div>
+  )
+}
+
+function KnowledgeGraphRelationRank({ edges }: { edges: KnowledgeGraphEdge[] }) {
+  return (
+    <div className="kg-source-panel">
+      {edges.slice(0, 10).map((edge) => (
+        <span key={edge.id}>{edge.relation}<strong>{edge.weight.toFixed(1)}</strong></span>
+      ))}
+    </div>
+  )
+}
+
+function KnowledgeGraphEvidenceTimeline({
+  edges,
+  nodes,
+  selectedNode,
+}: {
+  edges: KnowledgeGraphEdge[]
+  nodes: KnowledgeGraphNode[]
+  selectedNode?: KnowledgeGraphNode
+}) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  return (
+    <div className="event-timeline kg-evidence-timeline">
+      <div className="dock-title">
+        <Network size={17} />
+        <span>{selectedNode ? `${selectedNode.label} 证据链` : '知识图谱关系路径'}</span>
+      </div>
+      {edges.slice(0, 8).map((edge) => (
+        <article className="timeline-item level-high" key={edge.id}>
+          <time>权重 {edge.weight.toFixed(1)}</time>
+          <strong>{nodeById.get(edge.source)?.label || edge.source}</strong>
+          <span>{edge.relation} → {nodeById.get(edge.target)?.label || edge.target}</span>
+          <em>{edge.sourceSystems.slice(0, 2).join('、')} · 证据 {edge.evidenceCount}</em>
+        </article>
+      ))}
+    </div>
+  )
+}
+
 function EventTimeline({
   events,
   selectedEventId,
@@ -2376,7 +2883,7 @@ function skipped(name: string, message: string): AIToolTrace {
 }
 
 function isStageTab(value: string): value is StageTab {
-  return ['总览', '行政区专题', '行业专题', '应急处置', '安保模式'].includes(value)
+  return ['总览', '行政区专题', '行业专题', '应急处置', '安保模式', '知识图谱'].includes(value)
 }
 
 function isIndustrySelection(value: string): value is IndustrySelection {
@@ -2385,6 +2892,53 @@ function isIndustrySelection(value: string): value is IndustrySelection {
 
 function isEmergencyTimePreset(value: string): value is EmergencyTimePreset {
   return ['1月内', '3个月内', '1年内', '自定义'].includes(value)
+}
+
+function toggleValue(values: string[], value: string) {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
+}
+
+function nodeTypeLabel(type: string) {
+  const labels: Record<string, string> = {
+    module: '功能模块',
+    'source-system': '来源系统',
+    district: '行政区',
+    street: '街镇',
+    industry: '行业',
+    'risk-object': '风险对象',
+    incident: '警情',
+    inspection: '检查记录',
+    'security-task': '安保任务',
+    'security-force': '安保力量',
+    layer: '图层',
+    'risk-signal': '风险信号',
+    metric: '指标',
+  }
+  return labels[type] || type
+}
+
+function summarizeGraphNode(node: KnowledgeGraphNode) {
+  return {
+    id: node.id,
+    label: node.label,
+    type: node.type,
+    category: node.category,
+    density: node.density,
+    sourceSystems: node.sourceSystems,
+    sourceRefs: node.sourceRefs,
+  }
+}
+
+function summarizeGraphEdge(edge: KnowledgeGraphEdge) {
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    relation: edge.relation,
+    weight: edge.weight,
+    evidenceCount: edge.evidenceCount,
+    sourceSystems: edge.sourceSystems,
+  }
 }
 
 function calculateCityRiskScore() {
