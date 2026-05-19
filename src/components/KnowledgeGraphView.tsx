@@ -27,6 +27,10 @@ const nodeColors: Record<string, string> = {
   'risk-object': '#ff4d5d',
   incident: '#ff8f3d',
   inspection: '#39d98a',
+  'inspection-summary': '#69f0ae',
+  'fire-history': '#ff6b35',
+  'iot-profile': '#00e5ff',
+  'iot-device': '#5cf2ff',
   'security-task': '#5d9cff',
   'security-force': '#00f0ff',
   layer: '#a6e22e',
@@ -44,7 +48,7 @@ export function KnowledgeGraphView({
   onSelectEdge,
 }: KnowledgeGraphViewProps) {
   const ref = useRef<HTMLDivElement | null>(null)
-  const filtered = useMemo(() => filterGraph(snapshot, filters, search), [filters, search, snapshot])
+  const filtered = useMemo(() => filterGraph(snapshot, filters, search, selectedNodeId), [filters, search, selectedNodeId, snapshot])
 
   useEffect(() => {
     if (!ref.current) return
@@ -154,12 +158,13 @@ export function KnowledgeGraphView({
   return (
     <div className="knowledge-graph-shell">
       <div className="knowledge-graph-toolbar">
-        <span>上海消防风险监测预警知识图谱</span>
+        <span>{filtered.focusLabel ? `节点详情：${filtered.focusLabel}` : '上海消防风险监测预警知识图谱'}</span>
         <strong>{filtered.nodes.length} 节点 / {filtered.edges.length} 关系</strong>
+        {filtered.focusLabel && <em>一跳关系视图</em>}
       </div>
       <div className="knowledge-graph-canvas" ref={ref} />
       <div className="knowledge-graph-legend">
-        {['module', 'district', 'industry', 'risk-object', 'incident', 'security-force', 'source-system'].map((type) => (
+        {['module', 'district', 'industry', 'risk-object', 'inspection-summary', 'fire-history', 'iot-profile', 'iot-device', 'incident', 'security-force', 'source-system'].map((type) => (
           <span key={type}><i style={{ background: nodeColors[type] }} />{typeLabel(type)}</span>
         ))}
       </div>
@@ -167,10 +172,26 @@ export function KnowledgeGraphView({
   )
 }
 
-function filterGraph(snapshot: KnowledgeGraphSnapshot, filters: KnowledgeGraphFilters, search: string) {
+function filterGraph(snapshot: KnowledgeGraphSnapshot, filters: KnowledgeGraphFilters, search: string, selectedNodeId: string) {
   const normalized = search.trim().toLowerCase()
   const nodeTypeSet = new Set(filters.nodeTypes)
   const relationSet = new Set(filters.relations)
+  const selectedNode = snapshot.nodes.find((node) => node.id === selectedNodeId)
+  const relationMatched = (relation: string) => !relationSet.size || relationSet.has(relation)
+
+  if (selectedNode) {
+    const focusedEdges = snapshot.edges
+      .filter((edge) => relationMatched(edge.relation) && (edge.source === selectedNodeId || edge.target === selectedNodeId))
+      .sort((a, b) => b.weight - a.weight || b.evidenceCount - a.evidenceCount)
+      .slice(0, 48)
+    const focusedIds = new Set([selectedNodeId, ...focusedEdges.flatMap((edge) => [edge.source, edge.target])])
+    return {
+      nodes: snapshot.nodes.filter((node) => focusedIds.has(node.id)),
+      edges: focusedEdges,
+      focusLabel: selectedNode.label,
+    }
+  }
+
   const nodes = snapshot.nodes.filter((node) => {
     const typeMatched = !nodeTypeSet.size || nodeTypeSet.has(node.type)
     const densityMatched = node.density >= filters.minDensity
@@ -181,13 +202,13 @@ function filterGraph(snapshot: KnowledgeGraphSnapshot, filters: KnowledgeGraphFi
   })
   const visibleIds = new Set(nodes.map((node) => node.id))
   const edges = snapshot.edges.filter((edge) => {
-    const relationMatched = !relationSet.size || relationSet.has(edge.relation)
-    return relationMatched && visibleIds.has(edge.source) && visibleIds.has(edge.target)
+    return relationMatched(edge.relation) && visibleIds.has(edge.source) && visibleIds.has(edge.target)
   })
   const connectedIds = new Set(edges.flatMap((edge) => [edge.source, edge.target]))
   return {
     nodes: normalized ? nodes : nodes.filter((node) => connectedIds.has(node.id) || node.type === 'module').slice(0, 180),
     edges: edges.slice(0, 260),
+    focusLabel: '',
   }
 }
 
@@ -198,6 +219,10 @@ function typeLabel(type: string) {
     industry: '行业',
     'risk-object': '对象',
     incident: '警情',
+    'inspection-summary': '检查画像',
+    'fire-history': '火灾历史',
+    'iot-profile': '物联画像',
+    'iot-device': '物联设备',
     'security-force': '力量',
     'source-system': '来源',
   }

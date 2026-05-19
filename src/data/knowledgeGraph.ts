@@ -46,6 +46,11 @@ const prototypeSources = {
   iot: '物联感知平台',
 }
 
+interface ObjectFireProfileContext {
+  inspections: FireInspectionRecord[]
+  incidents: EmergencyIncident[]
+}
+
 export function buildKnowledgeGraphSnapshot(input: BuildKnowledgeGraphInput): KnowledgeGraphSnapshot {
   const nodes = new Map<string, KnowledgeGraphNode>()
   const edges = new Map<string, KnowledgeGraphEdge>()
@@ -156,9 +161,20 @@ export function buildKnowledgeGraphSnapshot(input: BuildKnowledgeGraphInput): Kn
     })
   })
 
+  const inspectionsByUnit = groupBy(input.inspectionRecords, (record) => record.unitId)
+  const incidentsByUnit = groupBy(input.incidents, (incident) => incident.unit.id)
   const allObjects = dedupeObjects([...input.riskObjects, ...input.industryUnits])
   allObjects.forEach((object) => {
-    addRiskObject(addNode, addEdge, object, object.id.startsWith('u-') ? prototypeSources.industry : prototypeSources.risk)
+    addRiskObject(
+      addNode,
+      addEdge,
+      object,
+      object.id.startsWith('u-') ? prototypeSources.industry : prototypeSources.risk,
+      {
+        inspections: inspectionsByUnit.get(object.id) || [],
+        incidents: incidentsByUnit.get(object.id) || [],
+      },
+    )
   })
 
   input.incidents.forEach((incident) => {
@@ -183,7 +199,10 @@ export function buildKnowledgeGraphSnapshot(input: BuildKnowledgeGraphInput): Kn
     addEdge(edge('module-emergency', nodeId, '属于模块', 3, incident.sourceSystems, 1))
     addEdge(edge(nodeId, districtId(incident.district), '位于', 3, incident.sourceSystems, 1))
     addEdge(edge(nodeId, riskObjectId(incident.unit.id), '处置对象', 5, incident.sourceSystems, incident.timeline.length))
-    addRiskObject(addNode, addEdge, incident.unit, prototypeSources.emergency)
+    addRiskObject(addNode, addEdge, incident.unit, prototypeSources.emergency, {
+      inspections: inspectionsByUnit.get(incident.unit.id) || [],
+      incidents: incidentsByUnit.get(incident.unit.id) || [],
+    })
     incident.sourceSystems.forEach((source) => addSourceSystem(addNode, addEdge, nodeId, source))
     incident.measures.forEach((measure) => {
       const metricNodeId = metricId(measure)
@@ -318,6 +337,7 @@ function addRiskObject(
   addEdge: (edge: Omit<KnowledgeGraphEdge, 'id'> & { id?: string }) => KnowledgeGraphEdge,
   object: RiskObject,
   sourceSystem: string,
+  profile: ObjectFireProfileContext = { inspections: [], incidents: [] },
 ) {
   const objectNodeId = riskObjectId(object.id)
   addNode({
@@ -370,6 +390,113 @@ function addRiskObject(
     })
     addEdge(edge(objectNodeId, signalId(signal), '触发', object.riskLevel === 'critical' ? 4 : 2.6, [prototypeSources.iot, sourceSystem], 1))
   })
+
+  addObjectFireProfile(addNode, addEdge, object, objectNodeId, sourceSystem, profile)
+}
+
+function addObjectFireProfile(
+  addNode: (node: Omit<KnowledgeGraphNode, 'density'> & { density?: number }) => KnowledgeGraphNode,
+  addEdge: (edge: Omit<KnowledgeGraphEdge, 'id'> & { id?: string }) => KnowledgeGraphEdge,
+  object: RiskObject,
+  objectNodeId: string,
+  sourceSystem: string,
+  profile: ObjectFireProfileContext,
+) {
+  const inspectionNodeId = inspectionSummaryId(object.id)
+  const fireHistoryNodeId = fireHistoryId(object.id)
+  const iotProfileNodeId = iotProfileId(object.id)
+  const issueCount = profile.inspections.reduce((sum, record) => sum + record.issues.length, 0)
+  const unrectifiedCount = profile.inspections.filter((record) => !record.rectified).length
+  const latestInspection = [...profile.inspections].sort((a, b) => b.date.localeCompare(a.date))[0]
+  const latestIncident = [...profile.incidents].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))[0]
+  const criticalSignals = object.signals.filter((signal) => /故障|报警|告警|逾期|投诉|占用|温升|失效|风险/.test(signal))
+  const iotOnlineRate = object.riskLevel === 'critical' ? 86 : object.riskLevel === 'high' ? 91 : 96
+
+  addNode({
+    id: inspectionNodeId,
+    label: `${object.name}监督检查画像`,
+    type: 'inspection-summary',
+    category: '消防属性',
+    sourceSystems: [prototypeSources.inspection],
+    sourceRefs: [`unit:${object.id}`, ...profile.inspections.map((record) => `inspection:${record.id}`)],
+    density: profile.inspections.length ? 4 + Math.min(4, issueCount + unrectifiedCount) : 2,
+    linkedEntityId: object.id,
+    metadata: {
+      unit: object.name,
+      inspectionCount: profile.inspections.length,
+      issueCount,
+      unrectifiedCount,
+      latestDate: latestInspection?.date || '暂无记录',
+      latestResult: latestInspection?.result || '暂无记录',
+      responsibleTeam: latestInspection?.responsibleTeam || '待接入监督系统',
+      sourceModule: '单位消防画像',
+    },
+  })
+  addEdge(edge(objectNodeId, inspectionNodeId, '监督检查', issueCount || 1.6, [prototypeSources.inspection, sourceSystem], Math.max(1, profile.inspections.length)))
+
+  addNode({
+    id: fireHistoryNodeId,
+    label: `${object.name}历史火灾画像`,
+    type: 'fire-history',
+    category: '消防属性',
+    sourceSystems: [prototypeSources.emergency],
+    sourceRefs: [`unit:${object.id}`, ...profile.incidents.map((incident) => `incident:${incident.id}`)],
+    density: profile.incidents.length ? 5 + profile.incidents.length : 1.8,
+    linkedEntityId: object.id,
+    metadata: {
+      unit: object.name,
+      incidentCount: profile.incidents.length,
+      latestIncident: latestIncident?.title || '暂无历史火灾警情',
+      latestStatus: latestIncident?.status || '无',
+      latestOccurredAt: latestIncident?.occurredAt || '无',
+      maxSeverity: latestIncident?.severity || '无',
+      sourceModule: '单位消防画像',
+    },
+  })
+  addEdge(edge(objectNodeId, fireHistoryNodeId, '历史火灾', profile.incidents.length ? 4.4 : 1.4, [prototypeSources.emergency, sourceSystem], Math.max(1, profile.incidents.length)))
+
+  addNode({
+    id: iotProfileNodeId,
+    label: `${object.name}消防物联网画像`,
+    type: 'iot-profile',
+    category: '消防属性',
+    sourceSystems: [prototypeSources.iot],
+    sourceRefs: [`unit:${object.id}`, ...object.signals.map((signal) => `signal:${signal}`)],
+    density: 3 + Math.min(5, object.signals.length + criticalSignals.length),
+    linkedEntityId: object.id,
+    metadata: {
+      unit: object.name,
+      onlineRate: iotOnlineRate,
+      deviceCount: estimateDeviceCount(object),
+      abnormalSignalCount: criticalSignals.length,
+      signalSummary: object.signals,
+      sourceModule: '单位消防画像',
+    },
+  })
+  addEdge(edge(objectNodeId, iotProfileNodeId, '消防画像', object.signals.length ? 3.6 : 1.4, [prototypeSources.iot, sourceSystem], Math.max(1, object.signals.length)))
+
+  inferIotDevices(object).forEach((device, index) => {
+    const deviceNodeId = iotDeviceId(object.id, device.name)
+    addNode({
+      id: deviceNodeId,
+      label: device.name,
+      type: 'iot-device',
+      category: '消防物联网设备',
+      sourceSystems: [prototypeSources.iot],
+      sourceRefs: [`unit:${object.id}`, `iotDevice:${slug(device.name)}`],
+      density: device.status === '异常' ? 4 : device.status === '离线' ? 3.5 : 2,
+      linkedEntityId: object.id,
+      metadata: {
+        unit: object.name,
+        deviceType: device.type,
+        status: device.status,
+        signal: device.signal,
+        lastSeen: object.updatedAt,
+        sourceModule: '单位消防画像',
+      },
+    })
+    addEdge(edge(iotProfileNodeId, deviceNodeId, '物联设备', device.status === '异常' ? 3.8 : 2.2, [prototypeSources.iot], index + 1))
+  })
 }
 
 function addSourceSystem(
@@ -414,6 +541,62 @@ function edge(
 function dedupeObjects(objects: RiskObject[]) {
   const seen = new Map<string, RiskObject>()
   objects.forEach((object) => seen.set(object.id, object))
+  return [...seen.values()]
+}
+
+function groupBy<T>(items: T[], getKey: (item: T) => string) {
+  const grouped = new Map<string, T[]>()
+  items.forEach((item) => {
+    const key = getKey(item)
+    grouped.set(key, [...(grouped.get(key) || []), item])
+  })
+  return grouped
+}
+
+function estimateDeviceCount(object: RiskObject) {
+  const industryBase: Partial<Record<RiskObject['industry'], number>> = {
+    高层建筑: 128,
+    商业综合体: 118,
+    医疗机构: 96,
+    厂房仓库: 82,
+    轨道交通: 104,
+    地下空间: 76,
+    人员密集场所: 88,
+    新能源汽车: 54,
+    电动自行车: 38,
+    燃气危化: 72,
+    施工动火: 24,
+  }
+  const base = industryBase[object.industry] || 42
+  return base + object.signals.length * 6 + (object.riskLevel === 'critical' ? 18 : object.riskLevel === 'high' ? 10 : 4)
+}
+
+function inferIotDevices(object: RiskObject) {
+  const defaults = [
+    { name: `${object.name}火灾自动报警主机`, type: '火灾自动报警', signal: object.signals[0] || '运行正常' },
+    { name: `${object.name}消防水系统压力监测`, type: '消防给水', signal: object.signals[1] || '压力稳定' },
+    { name: `${object.name}疏散通道视频巡检`, type: '视频 AI 巡检', signal: object.signals[2] || '通道正常' },
+  ]
+  const industryDevices: Partial<Record<RiskObject['industry'], Array<{ name: string; type: string; signal: string }>>> = {
+    高层建筑: [{ name: `${object.name}防排烟联动监测`, type: '防排烟系统', signal: object.signals.find((item) => item.includes('排烟')) || '联动状态待复核' }],
+    商业综合体: [{ name: `${object.name}客流热力感知`, type: '客流监测', signal: object.signals.find((item) => item.includes('客流')) || '客流平稳' }],
+    医疗机构: [{ name: `${object.name}医用气体区域监测`, type: '重点部位监测', signal: object.signals.find((item) => item.includes('气体')) || '重点区域在线' }],
+    厂房仓库: [{ name: `${object.name}电气火灾监测`, type: '电气火灾监控', signal: object.signals.find((item) => item.includes('充电') || item.includes('温升')) || '电气回路正常' }],
+    轨道交通: [{ name: `${object.name}站厅客流密度监测`, type: '客流监测', signal: object.signals.find((item) => item.includes('客流')) || '客流平稳' }],
+    地下空间: [{ name: `${object.name}排烟风机状态监测`, type: '防排烟系统', signal: object.signals.find((item) => item.includes('排烟')) || '排烟状态在线' }],
+    新能源汽车: [{ name: `${object.name}充电设施温度监测`, type: '充换电设施监测', signal: object.signals.find((item) => item.includes('温升') || item.includes('充电')) || '温度正常' }],
+    电动自行车: [{ name: `${object.name}集中充电棚烟温监测`, type: '烟温复合探测', signal: object.signals.find((item) => item.includes('充电') || item.includes('报警')) || '探测器在线' }],
+    燃气危化: [{ name: `${object.name}可燃气体探测器`, type: '燃气危化监测', signal: object.signals.find((item) => item.includes('危险') || item.includes('环境')) || '气体浓度正常' }],
+  }
+  return uniqueDevices([...defaults, ...(industryDevices[object.industry] || [])]).slice(0, 4).map((device) => ({
+    ...device,
+    status: device.signal.match(/故障|报警|告警|逾期|投诉|占用|温升|失败|离线|异常/) ? '异常' : device.signal.includes('离线') ? '离线' : '在线',
+  }))
+}
+
+function uniqueDevices<T extends { name: string }>(devices: T[]) {
+  const seen = new Map<string, T>()
+  devices.forEach((device) => seen.set(device.name, device))
   return [...seen.values()]
 }
 
@@ -471,6 +654,22 @@ function sourceId(source: string) {
 
 function metricId(metric: string) {
   return `metric:${slug(metric).slice(0, 36)}`
+}
+
+function inspectionSummaryId(id: string) {
+  return `inspection-summary:${id}`
+}
+
+function fireHistoryId(id: string) {
+  return `fire-history:${id}`
+}
+
+function iotProfileId(id: string) {
+  return `iot-profile:${id}`
+}
+
+function iotDeviceId(objectId: string, deviceName: string) {
+  return `iot-device:${objectId}:${slug(deviceName).slice(0, 42)}`
 }
 
 function clamp(value: number, min: number, max: number) {

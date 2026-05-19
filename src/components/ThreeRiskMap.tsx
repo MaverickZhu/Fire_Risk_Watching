@@ -81,6 +81,12 @@ interface StreetTownGeoCollection {
 
 type Projector = (lng: number, lat: number) => [number, number]
 type SecurityMapScope = 'venue' | 'district' | 'city'
+type ViewAngles = { azimuth: number; pitch: number }
+
+const DEFAULT_VIEW_ANGLES: ViewAngles = {
+  azimuth: 0,
+  pitch: Math.atan2(12.6, 15.6),
+}
 
 export function ThreeRiskMap({
   districts,
@@ -102,10 +108,11 @@ export function ThreeRiskMap({
   onSelectObject,
 }: ThreeRiskMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const callbacksRef = useRef({ onSelectDistrict, onSelectIndustryDistrict, onSelectEmergencyDistrict, onSelectObject })
-  const selectedRef = useRef(selectedDistrict)
-  const [zoomLevel, setZoomLevel] = useState(1)
-  const [securityMapScopeState, setSecurityMapScopeState] = useState<{ scope: SecurityMapScope; taskId?: string }>({ scope: 'venue' })
+	  const callbacksRef = useRef({ onSelectDistrict, onSelectIndustryDistrict, onSelectEmergencyDistrict, onSelectObject })
+	  const selectedRef = useRef(selectedDistrict)
+	  const [zoomLevel, setZoomLevel] = useState(1)
+	  const [viewAngles, setViewAngles] = useState<ViewAngles>(DEFAULT_VIEW_ANGLES)
+	  const [securityMapScopeState, setSecurityMapScopeState] = useState<{ scope: SecurityMapScope; taskId?: string }>({ scope: 'venue' })
   const visibleLayerIds = useMemo(() => new Set(layers.filter((layer) => layer.visible).map((layer) => layer.id)), [layers])
   const defaultSecurityMapScope: SecurityMapScope = securityTask?.taskType === 'event-ring' ? 'venue' : 'city'
   const securityMapScope = securityMapScopeState.taskId === securityTask?.id ? securityMapScopeState.scope : defaultSecurityMapScope
@@ -125,17 +132,18 @@ export function ThreeRiskMap({
     const scene = new THREE.Scene()
     scene.fog = new THREE.FogExp2('#04172b', 0.035)
 
-    const camera = new THREE.PerspectiveCamera(42, container.clientWidth / container.clientHeight, 0.1, 1000)
-    const zoomFactor = Math.max(0.62, Math.min(1.85, zoomLevel))
-    camera.position.set(0, -15.6 / zoomFactor, 12.6 / zoomFactor)
-    camera.lookAt(0, 0.2, 0)
+	    const camera = new THREE.PerspectiveCamera(42, container.clientWidth / container.clientHeight, 0.1, 1000)
+	    const zoomFactor = Math.max(0.62, Math.min(1.85, zoomLevel))
+	    const cameraControl = { azimuth: viewAngles.azimuth, pitch: viewAngles.pitch }
+	    applyCameraView(camera, zoomFactor, cameraControl)
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(container.clientWidth, container.clientHeight)
-    renderer.setClearColor('#061b2f', 1)
-    renderer.outputColorSpace = THREE.SRGBColorSpace
-    container.appendChild(renderer.domElement)
+	    renderer.setClearColor('#061b2f', 1)
+	    renderer.outputColorSpace = THREE.SRGBColorSpace
+	    renderer.domElement.style.touchAction = 'none'
+	    container.appendChild(renderer.domElement)
 
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
@@ -263,14 +271,69 @@ export function ThreeRiskMap({
       ),
     )
 
-    const handlePointerMove = (event: PointerEvent) => {
-      updatePointer(event, container, pointer)
-      const hits = raycaster.intersectObjects(interactive, false)
-      renderer.domElement.style.cursor = hits.length ? 'pointer' : 'default'
-    }
+	    const dragState = {
+	      active: false,
+	      pointerId: 0,
+	      lastX: 0,
+	      lastY: 0,
+	      moved: false,
+	      suppressClick: false,
+	    }
 
-    const handleClick = (event: PointerEvent) => {
-      updatePointer(event, container, pointer)
+	    const handlePointerDown = (event: PointerEvent) => {
+	      if (event.button !== 0) return
+	      dragState.active = true
+	      dragState.pointerId = event.pointerId
+	      dragState.lastX = event.clientX
+	      dragState.lastY = event.clientY
+	      dragState.moved = false
+	      renderer.domElement.setPointerCapture(event.pointerId)
+	      renderer.domElement.style.cursor = 'grabbing'
+	    }
+
+	    const handlePointerMove = (event: PointerEvent) => {
+	      if (dragState.active && event.pointerId === dragState.pointerId) {
+	        const deltaX = event.clientX - dragState.lastX
+	        const deltaY = event.clientY - dragState.lastY
+	        dragState.lastX = event.clientX
+	        dragState.lastY = event.clientY
+	        if (Math.abs(deltaX) + Math.abs(deltaY) > 2) {
+	          dragState.moved = true
+	          dragState.suppressClick = true
+	        }
+	        cameraControl.azimuth -= deltaX * 0.008
+	        cameraControl.pitch = clamp(cameraControl.pitch - deltaY * 0.006, 0.38, 1.18)
+	        applyCameraView(camera, zoomFactor, cameraControl)
+	        event.preventDefault()
+	        return
+	      }
+	      updatePointer(event, container, pointer)
+	      const hits = raycaster.intersectObjects(interactive, false)
+	      renderer.domElement.style.cursor = hits.length ? 'pointer' : 'default'
+	    }
+
+	    const handlePointerUp = (event: PointerEvent) => {
+	      if (!dragState.active || event.pointerId !== dragState.pointerId) return
+	      dragState.active = false
+	      renderer.domElement.releasePointerCapture(event.pointerId)
+	      renderer.domElement.style.cursor = dragState.moved ? 'grab' : 'default'
+	      if (dragState.moved) {
+	        setViewAngles({ azimuth: cameraControl.azimuth, pitch: cameraControl.pitch })
+	      }
+	    }
+
+	    const handlePointerLeave = () => {
+	      if (!dragState.active) {
+	        renderer.domElement.style.cursor = 'grab'
+	      }
+	    }
+
+	    const handleClick = (event: PointerEvent) => {
+	      if (dragState.suppressClick) {
+	        dragState.suppressClick = false
+	        return
+	      }
+	      updatePointer(event, container, pointer)
       raycaster.setFromCamera(pointer, camera)
       const hits = raycaster.intersectObjects(interactive, false)
       const hit = hits[0]?.object
@@ -294,8 +357,12 @@ export function ThreeRiskMap({
       }
     }
 
-    renderer.domElement.addEventListener('pointermove', handlePointerMove)
-    renderer.domElement.addEventListener('click', handleClick)
+	    renderer.domElement.addEventListener('pointerdown', handlePointerDown)
+	    renderer.domElement.addEventListener('pointermove', handlePointerMove)
+	    renderer.domElement.addEventListener('pointerup', handlePointerUp)
+	    renderer.domElement.addEventListener('pointercancel', handlePointerUp)
+	    renderer.domElement.addEventListener('pointerleave', handlePointerLeave)
+	    renderer.domElement.addEventListener('click', handleClick)
 
     const resizeObserver = new ResizeObserver(() => {
       camera.aspect = container.clientWidth / container.clientHeight
@@ -342,8 +409,12 @@ export function ThreeRiskMap({
     return () => {
       cancelAnimationFrame(frame)
       resizeObserver.disconnect()
-      renderer.domElement.removeEventListener('pointermove', handlePointerMove)
-      renderer.domElement.removeEventListener('click', handleClick)
+	      renderer.domElement.removeEventListener('pointerdown', handlePointerDown)
+	      renderer.domElement.removeEventListener('pointermove', handlePointerMove)
+	      renderer.domElement.removeEventListener('pointerup', handlePointerUp)
+	      renderer.domElement.removeEventListener('pointercancel', handlePointerUp)
+	      renderer.domElement.removeEventListener('pointerleave', handlePointerLeave)
+	      renderer.domElement.removeEventListener('click', handleClick)
       container.removeChild(renderer.domElement)
       scene.traverse((child) => {
         if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments || child instanceof THREE.Line) {
@@ -361,7 +432,7 @@ export function ThreeRiskMap({
       })
       renderer.dispose()
     }
-  }, [districts, industryScope, layers, mapMode, objects, securityMapScope, securityTask, selectedDistrict, selectedEmergencyObjectId, selectedIndustryUnitId, selectedObjectId, selectedSecurityForceId, showSecurityRings, visibleLayerIds, zoomLevel])
+	  }, [districts, industryScope, layers, mapMode, objects, securityMapScope, securityTask, selectedDistrict, selectedEmergencyObjectId, selectedIndustryUnitId, selectedObjectId, selectedSecurityForceId, showSecurityRings, viewAngles, visibleLayerIds, zoomLevel])
 
   const handleZoomIn = () => {
     setZoomLevel((value) => Math.min(1.85, Number((value + 0.16).toFixed(2))))
@@ -379,10 +450,14 @@ export function ThreeRiskMap({
     }
   }
 
-  const handleZoomReset = () => {
-    setZoomLevel(1)
-    setSecurityMapScopeState({ taskId: securityTask?.id, scope: defaultSecurityMapScope })
-  }
+	  const handleZoomReset = () => {
+	    setZoomLevel(1)
+	    setSecurityMapScopeState({ taskId: securityTask?.id, scope: defaultSecurityMapScope })
+	  }
+
+	  const handleViewReset = () => {
+	    setViewAngles(DEFAULT_VIEW_ANGLES)
+	  }
 
   const toolbarText = mapMode === 'district'
     ? '行政区专题：街镇分区风险沙盘'
@@ -406,13 +481,17 @@ export function ThreeRiskMap({
         <span>{toolbarText}</span>
         <strong>{mapMode === 'industry' && industryScope === 'city' ? selectedIndustry : mapMode === 'emergency' ? '警情处置' : mapMode === 'security' ? securityTask?.venueName || '消防安保' : selectedDistrict || '全市'}</strong>
       </div>
-      <div ref={containerRef} className="risk-map-canvas" />
-      <div className="map-zoom-controls" aria-label="地图缩放控件">
-        <button type="button" onClick={handleZoomIn}>+</button>
-        <button type="button" onClick={handleZoomOut}>-</button>
-        <button type="button" onClick={handleZoomReset}>复位</button>
-        <span>{Math.round(zoomLevel * 100)}%</span>
-      </div>
+	      <div ref={containerRef} className="risk-map-canvas" />
+	      <div className="map-zoom-controls" aria-label="地图缩放控件">
+	        <button type="button" onClick={handleZoomIn}>+</button>
+	        <button type="button" onClick={handleZoomOut}>-</button>
+	        <button type="button" onClick={handleZoomReset}>复位</button>
+	        <span>{Math.round(zoomLevel * 100)}%</span>
+	      </div>
+	      <div className="map-view-controls" aria-label="地图视角控件">
+	        <span>按住拖拽旋转</span>
+	        <button type="button" onClick={handleViewReset}>视角复位</button>
+	      </div>
       {mapMode === 'security' && securityTask?.taskType === 'event-ring' && (
         <div className="security-scope-controls" aria-label="安保圈视域切换">
           {([
@@ -1397,6 +1476,21 @@ function updatePointer(event: PointerEvent, container: HTMLElement, pointer: THR
   const rect = container.getBoundingClientRect()
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+}
+
+function applyCameraView(camera: THREE.PerspectiveCamera, zoomFactor: number, view: ViewAngles) {
+  const distance = 20 / zoomFactor
+  const horizontalDistance = Math.cos(view.pitch) * distance
+  camera.position.set(
+    Math.sin(view.azimuth) * horizontalDistance,
+    -Math.cos(view.azimuth) * horizontalDistance,
+    Math.sin(view.pitch) * distance,
+  )
+  camera.lookAt(0, 0.2, 0)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
 }
 
 function riskColor(score: number) {

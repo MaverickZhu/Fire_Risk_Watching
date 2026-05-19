@@ -351,6 +351,12 @@ button {
   color: #fff;
 }
 
+.knowledge-graph-toolbar em {
+  color: #2ff8e6;
+  font-size: 12px;
+  font-style: normal;
+}
+
 .knowledge-graph-canvas {
   position: absolute;
   inset: 0;
@@ -409,10 +415,23 @@ button {
   background: rgba(2, 12, 26, 0.72);
 }
 
-.security-scope-controls {
+.map-view-controls {
   position: absolute;
   right: 16px;
   top: 62px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(77, 188, 255, 0.22);
+  background: rgba(2, 12, 26, 0.72);
+}
+
+.security-scope-controls {
+  position: absolute;
+  right: 16px;
+  top: 106px;
   z-index: 4;
   display: flex;
   gap: 5px;
@@ -444,15 +463,29 @@ button {
   cursor: pointer;
 }
 
+.map-view-controls button {
+  min-width: 64px;
+  height: 28px;
+  color: #e9f7ff;
+  border: 1px solid rgba(77, 188, 255, 0.24);
+  background: rgba(14, 65, 98, 0.72);
+  cursor: pointer;
+}
+
 .map-zoom-controls button:nth-child(3) {
   min-width: 46px;
 }
 
-.map-zoom-controls span {
+.map-zoom-controls span,
+.map-view-controls span {
   min-width: 42px;
   color: #8edfff;
   font-size: 12px;
   text-align: center;
+}
+
+.map-view-controls span {
+  min-width: 84px;
 }
 
 .dot {
@@ -1054,6 +1087,17 @@ button {
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
+}
+
+.emergency-video-header-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.emergency-video-overlay header .emergency-video-header-actions {
+  flex-direction: row;
 }
 
 .emergency-video-overlay header span {
@@ -1847,18 +1891,26 @@ button {
   gap: 6px;
 }
 
+.security-video-grid.is-enlarged {
+  grid-template-columns: 1fr;
+}
+
 .security-video-cell {
   position: relative;
   min-height: 92px;
+  width: 100%;
   overflow: hidden;
   display: grid;
   align-content: end;
   gap: 3px;
   padding: 8px;
+  color: #e9f7ff;
+  text-align: left;
   border: 1px solid rgba(77, 188, 255, 0.18);
   background:
     radial-gradient(circle at 30% 24%, rgba(255,255,255,0.16), transparent 18%),
     linear-gradient(145deg, rgba(5, 22, 41, 0.86), rgba(7, 43, 73, 0.82));
+  cursor: pointer;
 }
 
 .security-video-cell::before {
@@ -1881,6 +1933,11 @@ button {
   color: #8db7d5;
 }
 
+.security-video-cell.enlarged {
+  min-height: 300px;
+  padding: 12px;
+}
+
 .security-video-cell strong,
 .security-video-cell span,
 .security-video-cell i {
@@ -1896,9 +1953,17 @@ button {
   white-space: nowrap;
 }
 
+.security-video-cell.enlarged strong {
+  font-size: 18px;
+}
+
 .security-video-cell span {
   color: #bce7ff;
   font-size: 11px;
+}
+
+.security-video-cell.enlarged span {
+  font-size: 13px;
 }
 
 .security-video-cell i {
@@ -1988,14 +2053,15 @@ button {
 
 .kg-stat-grid span,
 .kg-meta-grid span,
-.kg-source-panel span,
-.kg-mini-list span,
-.kg-edge-list span {
-  min-width: 0;
-  padding: 8px;
-  color: #9dcced;
-  background: rgba(7, 43, 73, 0.64);
-  font-size: 12px;
+	.kg-source-panel span,
+	.kg-mini-list span,
+	.kg-edge-list span,
+	.kg-attribute-list span {
+	  min-width: 0;
+	  padding: 8px;
+	  color: #9dcced;
+	  background: rgba(7, 43, 73, 0.64);
+	  font-size: 12px;
 }
 
 .kg-stat-grid strong,
@@ -2029,9 +2095,33 @@ button {
 }
 
 .kg-mini-list,
-.kg-edge-list {
+.kg-edge-list,
+.kg-attribute-list {
   display: grid;
   gap: 6px;
+}
+
+.kg-attribute-list {
+  padding: 10px;
+  border: 1px solid rgba(47, 248, 230, 0.18);
+  background: rgba(0, 229, 255, 0.06);
+}
+
+.kg-attribute-list strong {
+  color: #eaf8ff;
+  font-size: 13px;
+}
+
+.kg-attribute-list i,
+.kg-attribute-list em {
+  display: block;
+  color: #2ff8e6;
+  font-style: normal;
+}
+
+.kg-attribute-list em {
+  margin-top: 4px;
+  color: #9dcced;
 }
 
 .kg-mini-list i {
@@ -2097,6 +2187,18 @@ button {
   color: #dff7ff;
   border: 0;
   background: rgba(7, 43, 73, 0.72);
+  cursor: pointer;
+}
+
+.kg-global-button {
+  display: inline-flex;
+  justify-content: center;
+  gap: 7px;
+  align-items: center;
+  padding: 8px 10px;
+  color: #e9f7ff;
+  border: 0;
+  background: linear-gradient(135deg, rgba(181, 31, 50, 0.82), rgba(11, 142, 201, 0.72));
   cursor: pointer;
 }
 

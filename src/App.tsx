@@ -156,6 +156,7 @@ function App() {
   const [securityVideoForceIds, setSecurityVideoForceIds] = useState<string[]>([securityForcePoints[1].id, securityForcePoints[2].id, securityForcePoints[3].id])
   const [securityVideoDispatched, setSecurityVideoDispatched] = useState(false)
   const [securityVideoOpen, setSecurityVideoOpen] = useState(false)
+  const [securityVideoEnlargedForceId, setSecurityVideoEnlargedForceId] = useState('')
   const [selectedGraphNodeId, setSelectedGraphNodeId] = useState('')
   const [selectedGraphEdgeId, setSelectedGraphEdgeId] = useState('')
   const [graphSearch, setGraphSearch] = useState('')
@@ -519,7 +520,7 @@ function App() {
         if (toolName === 'open_emergency_video_dispatch') {
           setActiveStage('应急处置')
           setEmergencyVideoOpen(true)
-          setEmergencyVideoDispatched(true)
+          setEmergencyVideoDispatched(false)
           return executed(toolName, '已打开当前警情视频调度。')
         }
 
@@ -659,7 +660,15 @@ function App() {
       setEmergencyVideoIds(defaultEmergencyVideoIds(selectedIncident))
     }
     setEmergencyVideoOpen(true)
+    setEmergencyVideoDispatched(false)
+  }
+
+  const handleEmergencyVideoDispatch = () => {
+    if (!emergencyVideoIds.length) {
+      setEmergencyVideoIds(defaultEmergencyVideoIds(selectedIncident))
+    }
     setEmergencyVideoDispatched(true)
+    setEmergencyVideoEnlargedId('')
   }
 
   const handleSecurityTaskSelect = (taskId: string) => {
@@ -674,6 +683,7 @@ function App() {
     setSecurityVideoForceIds(securityForces.filter((force) => force.taskId === task.id).slice(0, 4).map((force) => force.id))
     setSecurityVideoDispatched(false)
     setSecurityVideoOpen(false)
+    setSecurityVideoEnlargedForceId('')
     setActiveStage('安保模式')
     setQuestion(`请研判${task.name}的消防力量覆盖、圈层风险和安保勤务重点`)
   }
@@ -695,6 +705,7 @@ function App() {
       return [...current, forceId].slice(0, 9)
     })
     setSecurityVideoDispatched(false)
+    setSecurityVideoEnlargedForceId('')
   }
 
   const handleSecurityVideoDispatch = () => {
@@ -702,6 +713,7 @@ function App() {
       setSecurityVideoForceIds([selectedSecurityForce.id])
     }
     setSecurityVideoDispatched(true)
+    setSecurityVideoEnlargedForceId('')
   }
 
   const handleSecurityVideoOpen = () => {
@@ -709,6 +721,7 @@ function App() {
       setSecurityVideoForceIds((current) => [selectedSecurityForce.id, ...current].slice(0, 9))
     }
     setSecurityVideoDispatched(false)
+    setSecurityVideoEnlargedForceId('')
     setSecurityVideoOpen(true)
   }
 
@@ -831,7 +844,6 @@ function App() {
   const handleGraphNodeSelect = (node: KnowledgeGraphNode) => {
     setSelectedGraphNodeId(node.id)
     setSelectedGraphEdgeId('')
-    setGraphSearch(node.label)
     setQuestion(`分析${node.label}在知识图谱中的风险来源、跨模块关系、证据链和处置建议`)
     setLastUserOperation(`点击知识图谱节点：${node.label}`)
 
@@ -888,6 +900,15 @@ function App() {
     setSelectedGraphEdgeId(edge.id)
     setQuestion(`分析知识图谱关系“${edge.relation}”的来源系统、证据数量、关联强度和处置建议`)
     setLastUserOperation(`点击知识图谱关系：${edge.relation}`)
+  }
+
+  const resetKnowledgeGraphView = () => {
+    setSelectedGraphNodeId('')
+    setSelectedGraphEdgeId('')
+    setGraphSearch('')
+    setGraphFilters({ nodeTypes: [], relations: [], minDensity: 1 })
+    setQuestion('请基于当前知识图谱分析上海消防风险监测预警的数据关联、核心风险链路和跨模块处置建议')
+    setLastUserOperation('返回知识图谱全局视图')
   }
 
   const handleGraphNodeJump = (node: KnowledgeGraphNode) => {
@@ -1071,6 +1092,7 @@ function App() {
                   edges={knowledgeGraphSnapshot.edges}
                   onChange={setGraphFilters}
                   onSelectNode={handleGraphNodeSelect}
+                  onReset={resetKnowledgeGraphView}
                 />
               ) : isSecurityStage ? (
                 <SecurityLayerPanel layers={securityLayers} onToggle={handleSecurityLayerToggle} />
@@ -1138,9 +1160,14 @@ function App() {
                 selectedForceIds={securityVideoForceIds}
                 activeForces={securityVideoForces}
                 dispatched={securityVideoDispatched}
+                enlargedForceId={securityVideoEnlargedForceId}
                 onToggle={handleSecurityVideoToggle}
                 onDispatch={handleSecurityVideoDispatch}
-                onClose={() => setSecurityVideoOpen(false)}
+                onClose={() => {
+                  setSecurityVideoOpen(false)
+                  setSecurityVideoEnlargedForceId('')
+                }}
+                onToggleEnlarge={(forceId) => setSecurityVideoEnlargedForceId((current) => (current === forceId ? '' : forceId))}
               />
             )}
             {isEmergencyStage && emergencyVideoOpen && (
@@ -1151,6 +1178,7 @@ function App() {
                 dispatched={emergencyVideoDispatched}
                 enlargedVideoId={emergencyVideoEnlargedId}
                 onToggle={handleEmergencyVideoToggle}
+                onDispatch={handleEmergencyVideoDispatch}
                 onClose={() => setEmergencyVideoOpen(false)}
                 onToggleEnlarge={(videoId) => setEmergencyVideoEnlargedId((current) => (current === videoId ? '' : videoId))}
               />
@@ -1813,19 +1841,24 @@ function SecurityVideoCommandOverlay({
   selectedForceIds,
   activeForces,
   dispatched,
+  enlargedForceId,
   onToggle,
   onDispatch,
   onClose,
+  onToggleEnlarge,
 }: {
   forces: SecurityForcePoint[]
   selectedForceIds: string[]
   activeForces: SecurityForcePoint[]
   dispatched: boolean
+  enlargedForceId: string
   onToggle: (forceId: string) => void
   onDispatch: () => void
   onClose: () => void
+  onToggleEnlarge: (forceId: string) => void
 }) {
-  const cells = Array.from({ length: 9 }, (_, index) => activeForces[index])
+  const enlargedForce = activeForces.find((force) => force.id === enlargedForceId)
+  const cells = enlargedForce ? [enlargedForce] : Array.from({ length: 9 }, (_, index) => activeForces[index])
 
   return (
     <aside className="security-video-overlay">
@@ -1844,22 +1877,27 @@ function SecurityVideoCommandOverlay({
         </div>
       </header>
       <div className="security-video-workbench">
-        <div className="security-video-grid">
+        <div className={`security-video-grid ${enlargedForce ? 'is-enlarged' : ''}`}>
           {cells.map((force, index) => (
-            <div
-              className={`security-video-cell ${force ? `tone-${force.liveFeed.snapshotTone}` : 'empty'}`}
+            <button
+              className={`security-video-cell ${force ? `tone-${force.liveFeed.snapshotTone}` : 'empty'} ${enlargedForce ? 'enlarged' : ''}`}
               key={force?.id || `empty-${index}`}
+              type="button"
+              onDoubleClick={() => {
+                if (!force) return
+                onToggleEnlarge(force.id)
+              }}
             >
               {force ? (
                 <>
                   <strong>{force.name}</strong>
                   <span>{securityForceLabels[force.forceType]} · {force.liveFeed.status === 'online' ? '在线' : '离线'}</span>
-                  <i>{String(index + 1).padStart(2, '0')}</i>
+                  <i>{enlargedForce ? '双击恢复' : String(index + 1).padStart(2, '0')}</i>
                 </>
               ) : (
                 <span>待拉入团队</span>
               )}
-            </div>
+            </button>
           ))}
         </div>
         <div className="security-video-team-picker">
@@ -1965,6 +2003,7 @@ function EmergencyVideoCommandOverlay({
   dispatched,
   enlargedVideoId,
   onToggle,
+  onDispatch,
   onClose,
   onToggleEnlarge,
 }: {
@@ -1974,6 +2013,7 @@ function EmergencyVideoCommandOverlay({
   dispatched: boolean
   enlargedVideoId: string
   onToggle: (videoId: string) => void
+  onDispatch: () => void
   onClose: () => void
   onToggleEnlarge: (videoId: string) => void
 }) {
@@ -1987,7 +2027,12 @@ function EmergencyVideoCommandOverlay({
           <span><Video size={15} />队站视频调度</span>
           <strong>{dispatched ? '视频会议调度中' : `${activeVideos.length} 路待调度`}</strong>
         </div>
-        <button className="ghost" type="button" onClick={onClose}>收起</button>
+        <div className="emergency-video-header-actions">
+          <button type="button" onClick={onDispatch}>
+            <Video size={15} />一键调度
+          </button>
+          <button className="ghost" type="button" onClick={onClose}>收起</button>
+        </div>
       </header>
       <div className="emergency-video-workbench">
         <div className={`emergency-video-grid ${enlargedVideo ? 'is-enlarged' : ''}`}>
@@ -2499,6 +2544,7 @@ function KnowledgeGraphSearchPanel({
   edges,
   onChange,
   onSelectNode,
+  onReset,
 }: {
   search: string
   setSearch: (value: string) => void
@@ -2507,6 +2553,7 @@ function KnowledgeGraphSearchPanel({
   edges: KnowledgeGraphEdge[]
   onChange: (filters: { nodeTypes: string[]; relations: string[]; minDensity: number }) => void
   onSelectNode: (node: KnowledgeGraphNode) => void
+  onReset: () => void
 }) {
   const relations = [...new Set(edges.map((edge) => edge.relation))]
   const matchedNodes = search.trim()
@@ -2518,6 +2565,9 @@ function KnowledgeGraphSearchPanel({
         <Search size={15} />
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点、来源、对象" />
       </div>
+      <button className="kg-global-button" type="button" onClick={onReset}>
+        <Network size={15} />全局视图
+      </button>
       {!!matchedNodes.length && (
         <div className="kg-search-results">
           {matchedNodes.map((node) => (
@@ -2584,13 +2634,22 @@ function KnowledgeGraphDetailPanel({
     return <p className="empty-text">请选择图谱节点或关系，查看来源、密度与跨模块证据链。</p>
   }
 
-  const relatedEdges = edges.filter((item) => item.source === node.id || item.target === node.id).slice(0, 6)
+  const allRelatedEdges = edges.filter((item) => item.source === node.id || item.target === node.id)
+  const attributeTypes = new Set(['inspection-summary', 'fire-history', 'iot-profile', 'iot-device'])
+  const attributeEdges = allRelatedEdges
+    .filter((item) => {
+      const relatedNode = nodeById.get(item.source === node.id ? item.target : item.source)
+      return relatedNode ? attributeTypes.has(relatedNode.type) : false
+    })
+    .slice(0, 8)
+  const relatedEdges = allRelatedEdges.slice(0, 8)
   const canJump = ['district', 'industry', 'risk-object', 'incident', 'security-task', 'security-force'].includes(node.type)
+  const nodeProfileTitle = nodeTypeLabel(node.type).includes('画像') ? nodeTypeLabel(node.type) : `${nodeTypeLabel(node.type)}画像`
 
   return (
     <div className="kg-detail-panel">
       <div className="detail-hero">
-        <span>{nodeTypeLabel(node.type)}画像</span>
+        <span>{nodeProfileTitle}</span>
         <strong>{node.label}</strong>
         <em>{node.category} · 关联密度 {node.density.toFixed(1)}</em>
       </div>
@@ -2606,6 +2665,21 @@ function KnowledgeGraphDetailPanel({
           <p key={key}>{key}: {Array.isArray(value) ? value.join('、') : String(value)}</p>
         ))}
       </div>
+      {!!attributeEdges.length && (
+        <div className="kg-attribute-list">
+          <strong>消防属性子节点</strong>
+          {attributeEdges.map((item) => {
+            const relatedNode = nodeById.get(item.source === node.id ? item.target : item.source)
+            return relatedNode ? (
+              <span key={item.id}>
+                <i>{nodeTypeLabel(relatedNode.type)}</i>
+                {relatedNode.label}
+                <em>{item.relation} · {item.evidenceCount} 条证据</em>
+              </span>
+            ) : null
+          })}
+        </div>
+      )}
       <div className="kg-edge-list">
         {relatedEdges.map((item) => (
           <span key={item.id}>{item.relation} · {nodeById.get(item.source === node.id ? item.target : item.source)?.label}</span>
@@ -2906,9 +2980,13 @@ function nodeTypeLabel(type: string) {
     street: '街镇',
     industry: '行业',
     'risk-object': '风险对象',
-    incident: '警情',
-    inspection: '检查记录',
-    'security-task': '安保任务',
+	    incident: '警情',
+	    inspection: '检查记录',
+	    'inspection-summary': '监督检查画像',
+	    'fire-history': '历史火灾画像',
+	    'iot-profile': '物联画像',
+	    'iot-device': '物联设备',
+	    'security-task': '安保任务',
     'security-force': '安保力量',
     layer: '图层',
     'risk-signal': '风险信号',
