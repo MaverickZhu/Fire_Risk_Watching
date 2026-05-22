@@ -30,6 +30,7 @@ import {
   Video,
 } from 'lucide-react'
 import './App.css'
+import firefighterCatRunCycle from './assets/ai/firefighter-cat-run-cycle-strip.png'
 import { KnowledgeGraphView } from './components/KnowledgeGraphView'
 import { ThreeRiskMap } from './components/ThreeRiskMap'
 import { TrendChart } from './components/TrendChart'
@@ -64,6 +65,29 @@ import type {
 } from './types'
 
 type AspectMode = '16:9' | '32:9'
+type HeaderKpiKey = 'risk-score' | 'critical' | 'high' | 'processing' | 'closed-rate'
+type HeaderKpiAction =
+  | { type: 'district'; district: string }
+  | { type: 'object'; object: RiskObject }
+  | { type: 'status'; status: RiskObject['status'] }
+
+interface HeaderKpiDetail {
+  id: string
+  label: string
+  value: string
+  source: string
+  action?: HeaderKpiAction
+}
+
+interface HeaderKpiDefinition {
+  key: HeaderKpiKey
+  label: string
+  value: string
+  tone: string
+  source: string
+  details: HeaderKpiDetail[]
+}
+
 type AIContextOverride = Partial<{
   activeStage: StageTab
   selectedDistrict: string
@@ -266,6 +290,8 @@ function App() {
   const criticalCount = riskObjects.filter((item) => item.riskLevel === 'critical').length
   const highCount = riskObjects.filter((item) => item.riskLevel === 'high').length
   const processingCount = riskObjects.filter((item) => item.status === '处置中').length
+  const closedRate = Math.round((riskObjects.filter((item) => item.status === '已闭环').length / riskObjects.length) * 100)
+  const headerKpis = useMemo(() => buildHeaderKpis(riskObjects, districtShapes, cityRiskScore, closedRate), [cityRiskScore, closedRate])
   const activeObjects = isSecurityStage ? securityMapObjects : isEmergencyStage ? emergencyMapObjects : isIndustryStage ? industryMapObjects : regionObjects
   const mapObjects = isSecurityStage ? securityMapObjects : isEmergencyStage ? emergencyMapObjects : isIndustryStage ? industryMapObjects : riskObjects
 
@@ -349,7 +375,7 @@ function App() {
       availableTools: aiToolNames,
       conversationHistory,
     })
-    const trace = executeTools ? executeAIToolCalls(result.toolCalls || []) : []
+    const trace = executeTools ? summarizeAIToolCalls(result.toolCalls || []) : []
     const mergedResult = {
       ...result,
       toolTrace: [...(result.toolTrace || []), ...trace],
@@ -363,9 +389,6 @@ function App() {
     setAiLoading(false)
     setLastUserOperation(operation)
 
-    if (trace.some((item) => item.name === 'run_analysis' && item.status === 'executed') && executeTools) {
-      window.setTimeout(() => void runAI('text', prompt, 'AI工具执行后自动复核', false), 0)
-    }
   }
 
   const handleVoice = async () => {
@@ -373,181 +396,19 @@ function App() {
     const prompt = await startVoiceInput()
     setQuestion(prompt)
     setAiLoading(false)
-    await runAI('voice', prompt, '语音输入启动研判')
+    setLastUserOperation('语音输入完成，等待用户点击研判')
   }
 
-  const executeAIToolCalls = (toolCalls: AIToolCall[]): AIToolTrace[] => {
-    return toolCalls.map((toolCall) => {
-      const args = toolCall.arguments || {}
-      const toolName = toolCall.name
-
-      if (!aiToolNames.includes(toolName)) {
-        return { name: toolName, status: 'skipped', message: '未知工具，已忽略。' }
-      }
-
-      try {
-        if (toolName === 'switch_stage') {
-          const stage = stringArg(args, 'stage')
-          if (!isStageTab(stage)) return skipped(toolName, '专题名称不存在。')
-          setActiveStage(stage)
-          if (stage === '总览') setOverviewDistrict('')
-          if (stage === '行业专题') setIndustryScope('city')
-          if (stage === '应急处置') {
-            setSelectedIncident(latestCurrentIncident)
-            setSelectedDistrict(latestCurrentIncident.district)
-            setSelectedObject(incidentToRiskObject(latestCurrentIncident))
-          }
-          if (stage === '安保模式') setSelectedDistrict(selectedSecurityTask.district === '全市' ? '' : selectedSecurityTask.district)
-          return executed(toolName, `已切换至${stage}。`)
-        }
-
-        if (toolName === 'select_district') {
-          const district = stringArg(args, 'district')
-          if (!districtShapes.some((item) => item.name === district)) return skipped(toolName, '行政区不存在。')
-          setSelectedDistrict(district)
-          if (activeStage === '总览') {
-            setOverviewDistrict(district)
-          } else {
-            setActiveStage('行政区专题')
-          }
-          return executed(toolName, `已选中${district}。`)
-        }
-
-        if (toolName === 'reset_overview') {
-          setActiveStage('总览')
-          setOverviewDistrict('')
-          return executed(toolName, '已回到全市总览。')
-        }
-
-        if (toolName === 'select_industry') {
-          const industry = stringArg(args, 'industry')
-          if (!isIndustrySelection(industry)) return skipped(toolName, '行业不存在。')
-          setSelectedIndustry(industry)
-          setIndustryScope('city')
-          setSelectedIndustryDistrict('')
-          setSelectedIndustryUnit(null)
-          setActiveStage('行业专题')
-          return executed(toolName, `已切换行业专题：${industry}。`)
-        }
-
-        if (toolName === 'select_industry_district') {
-          const district = stringArg(args, 'district')
-          if (!districtShapes.some((item) => item.name === district)) return skipped(toolName, '行政区不存在。')
-          setSelectedDistrict(district)
-          setSelectedIndustryDistrict(district)
-          setSelectedIndustryUnit(null)
-          setIndustryScope('district')
-          setActiveStage('行业专题')
-          return executed(toolName, `已进入${district}行业详情。`)
-        }
-
-        if (toolName === 'select_industry_unit') {
-          const unitKey = stringArg(args, 'unitId') || stringArg(args, 'id') || stringArg(args, 'name')
-          const unit = knownIndustryUnits.find((item) => item.id === unitKey || item.name.includes(unitKey) || unitKey.includes(item.name))
-          if (!unit) return skipped(toolName, '行业单位不存在。')
-          setSelectedObject(unit)
-          setSelectedIndustryUnit(unit)
-          setSelectedIndustry(unit.industry)
-          setSelectedIndustryDistrict(unit.district)
-          setSelectedDistrict(unit.district)
-          setIndustryScope('unit')
-          setActiveStage('行业专题')
-          return executed(toolName, `已选中行业单位：${unit.name}。`)
-        }
-
-        if (toolName === 'select_incident') {
-          const incidentKey = stringArg(args, 'incidentId') || stringArg(args, 'id') || stringArg(args, 'alarmNo') || stringArg(args, 'name')
-          const incident = args.latest
-            ? latestCurrentIncident
-            : emergencyIncidents.find((item) => item.id === incidentKey || item.alarmNo === incidentKey || item.title.includes(incidentKey) || item.unit.name.includes(incidentKey))
-          if (!incident) return skipped(toolName, '警情不存在。')
-          setSelectedIncident(incident)
-          setSelectedDistrict(incident.district)
-          setSelectedObject(incidentToRiskObject(incident))
-          setEmergencyVideoIds(defaultEmergencyVideoIds(incident))
-          setEmergencyVideoOpen(false)
-          setEmergencyVideoDispatched(false)
-          setEmergencyVideoEnlargedId('')
-          setActiveStage('应急处置')
-          return executed(toolName, `已选中警情：${incident.unit.name}。`)
-        }
-
-        if (toolName === 'set_incident_time_preset') {
-          const preset = stringArg(args, 'preset')
-          if (!isEmergencyTimePreset(preset)) return skipped(toolName, '时间范围不存在。')
-          setIncidentPreset(preset)
-          setActiveStage('应急处置')
-          return executed(toolName, `已设置警情时间范围：${preset}。`)
-        }
-
-        if (toolName === 'select_security_task') {
-          const taskKey = stringArg(args, 'taskId') || stringArg(args, 'id') || stringArg(args, 'name')
-          const task = securityTasks.find((item) => item.id === taskKey || item.name.includes(taskKey) || item.venueName.includes(taskKey))
-          if (!task) return skipped(toolName, '安保任务不存在。')
-          setSelectedSecurityTaskId(task.id)
-          setSelectedDistrict(task.district === '全市' ? '' : task.district)
-          setSelectedSecurityForceId(securityForces.find((force) => force.taskId === task.id)?.id || selectedSecurityForceId)
-          setActiveStage('安保模式')
-          return executed(toolName, `已进入安保任务：${task.name}。`)
-        }
-
-        if (toolName === 'select_security_force') {
-          const forceKey = stringArg(args, 'forceId') || stringArg(args, 'id') || stringArg(args, 'name')
-          const force = securityForces.find((item) => item.id === forceKey || item.name.includes(forceKey))
-          if (!force) return skipped(toolName, '安保力量不存在。')
-          setSelectedSecurityForceId(force.id)
-          setActiveStage('安保模式')
-          return executed(toolName, `已选中安保力量：${force.name}。`)
-        }
-
-        if (toolName === 'toggle_layer') {
-          const layerKey = stringArg(args, 'layerId') || stringArg(args, 'id') || stringArg(args, 'name')
-          const layer = layers.find((item) => item.id === layerKey || item.name.includes(layerKey))
-          if (!layer) return skipped(toolName, '图层不存在。')
-          setLayers((current) => current.map((item) => (item.id === layer.id ? { ...item, visible: !item.visible } : item)))
-          return executed(toolName, `已切换图层：${layer.name}。`)
-        }
-
-        if (toolName === 'toggle_security_layer') {
-          const layerKey = stringArg(args, 'layerId') || stringArg(args, 'id') || stringArg(args, 'name')
-          const entry = Object.entries(securityLayerLabels).find(([id, label]) => id === layerKey || label.includes(layerKey))
-          if (!entry) return skipped(toolName, '安保图层不存在。')
-          setSecurityLayers((current) => ({ ...current, [entry[0]]: !current[entry[0] as keyof SecurityLayerState] }))
-          setActiveStage('安保模式')
-          return executed(toolName, `已切换安保图层：${entry[1]}。`)
-        }
-
-        if (toolName === 'open_emergency_video_dispatch') {
-          setActiveStage('应急处置')
-          setEmergencyVideoOpen(true)
-          setEmergencyVideoDispatched(false)
-          return executed(toolName, '已打开当前警情视频调度。')
-        }
-
-        if (toolName === 'open_security_video_dispatch') {
-          setActiveStage('安保模式')
-          setSecurityVideoOpen(true)
-          setSecurityVideoDispatched(true)
-          return executed(toolName, '已打开安保视频调度。')
-        }
-
-        if (toolName === 'set_question') {
-          const nextQuestion = stringArg(args, 'question')
-          if (!nextQuestion) return skipped(toolName, '问题为空。')
-          setQuestion(nextQuestion)
-          return executed(toolName, `已更新问题：${nextQuestion}`)
-        }
-
-        if (toolName === 'run_analysis') {
-          return executed(toolName, '已触发工具执行后的自动复核。')
-        }
-
-        return skipped(toolName, '工具未实现。')
-      } catch (error) {
-        return { name: toolName, status: 'failed', message: error instanceof Error ? error.message : String(error) }
-      }
-    })
+  const summarizeAIToolCalls = (toolCalls: AIToolCall[]): AIToolTrace[] => {
+    return toolCalls.map((toolCall) => ({
+      name: toolCall.name,
+      status: aiToolNames.includes(toolCall.name) ? 'skipped' : 'failed',
+      message: aiToolNames.includes(toolCall.name)
+        ? '已识别建议工具调用，但按当前交互规则不自动联动页面。'
+        : '未知工具，已忽略。',
+    }))
   }
+
 
   const handleStageSelect = (tab: StageTab) => {
     setActiveStage(tab)
@@ -581,22 +442,20 @@ function App() {
   }
 
   const handleDistrictSelect = (district: string) => {
-    if (activeStage === '总览') {
-      const nextDistrict = overviewDistrict === district ? '' : district
-      setOverviewDistrict(nextDistrict)
-      setSelectedDistrict(district)
-      setQuestion(nextDistrict ? `分析${nextDistrict}当前消防风险态势` : '请综合分析上海市全市消防风险态势和重点区域变化')
-      window.setTimeout(
-        () => void runAI('region-click', nextDistrict ? `分析${nextDistrict}当前消防风险态势` : '分析上海市全市消防风险态势'),
-        0,
-      )
-      return
-    }
+	    if (activeStage === '总览') {
+	      const nextDistrict = overviewDistrict === district ? '' : district
+	      setOverviewDistrict(nextDistrict)
+	      setSelectedDistrict(district)
+	      setQuestion(nextDistrict ? `分析${nextDistrict}当前消防风险态势` : '请综合分析上海市全市消防风险态势和重点区域变化')
+	      setLastUserOperation(`选择总览行政区：${nextDistrict || '全市'}`)
+	      return
+	    }
 
-    setSelectedDistrict(district)
-    setActiveStage('行政区专题')
-    window.setTimeout(() => void runAI('region-click', `分析${district}当前消防风险态势`), 0)
-  }
+	    setSelectedDistrict(district)
+	    setActiveStage('行政区专题')
+	    setQuestion(`分析${district}当前消防风险态势`)
+	    setLastUserOperation(`选择行政区专题：${district}`)
+	  }
 
   const resetOverview = () => {
     setOverviewDistrict('')
@@ -606,18 +465,12 @@ function App() {
   const handleIndustryDistrictSelect = (district: string) => {
     setSelectedDistrict(district)
     setSelectedIndustryDistrict(district)
-    setSelectedIndustryUnit(null)
-    setIndustryScope('district')
-    setActiveStage('行业专题')
-    window.setTimeout(
-      () =>
-        void runAI(
-          'region-click',
-          `分析${district}${selectedIndustry === '全部行业' ? '重点行业' : selectedIndustry}消防风险态势`,
-        ),
-      0,
-    )
-  }
+	    setSelectedIndustryUnit(null)
+	    setIndustryScope('district')
+	    setActiveStage('行业专题')
+	    setQuestion(`分析${district}${selectedIndustry === '全部行业' ? '重点行业' : selectedIndustry}消防风险态势`)
+	    setLastUserOperation(`选择行业专题行政区：${district}`)
+	  }
 
   const handleEmergencyDistrictSelect = (district: string) => {
     const incident = getLatestIncident(currentIncidents.filter((item) => item.district === district))
@@ -770,18 +623,18 @@ function App() {
       return
     }
 
-    if (activeStage === '应急处置' || object.id.startsWith('e-')) {
-      const incident = emergencyIncidents.find((item) => item.id === object.id)
-      if (incident) {
-        setSelectedIncident(incident)
-        setSelectedDistrict(incident.district)
-        setSelectedObject(object)
-        setActiveStage('应急处置')
-        setQuestion(`研判${incident.unit.name}${incident.incidentType}处置态势，并结合历史消防检查记录提出指挥建议`)
-        window.setTimeout(() => void runAI('object-click', `分析${incident.title}的处置态势、单位画像和历史隐患关联`), 0)
-      }
-      return
-    }
+	    if (activeStage === '应急处置' || object.id.startsWith('e-')) {
+	      const incident = emergencyIncidents.find((item) => item.id === object.id)
+	      if (incident) {
+	        setSelectedIncident(incident)
+	        setSelectedDistrict(incident.district)
+	        setSelectedObject(object)
+	        setActiveStage('应急处置')
+	        setQuestion(`研判${incident.unit.name}${incident.incidentType}处置态势，并结合历史消防检查记录提出指挥建议`)
+	        setLastUserOperation(`选择应急处置警情：${incident.title}`)
+	      }
+	      return
+	    }
 
     if (activeStage === '行业专题' || object.id.startsWith('u-')) {
       const prompt = `分析${object.name}的行业风险画像、证据片段和处置建议`
@@ -791,31 +644,18 @@ function App() {
       setSelectedIndustryDistrict(object.district)
       setSelectedDistrict(object.district)
       setIndustryScope('unit')
-      setActiveStage('行业专题')
-      setQuestion(prompt)
-      setLastUserOperation(`选择行业单位：${object.name}`)
-      window.setTimeout(
-        () => void runAI('object-click', prompt, `选择行业单位：${object.name}`, true, {
-          activeStage: '行业专题',
-          selectedDistrict: object.district,
-          selectedIndustry: object.industry,
-          industryScope: 'unit',
-          selectedIndustryDistrict: object.district,
-          selectedIndustryUnit: object,
-          selectedObject: object,
-          selectedRegion: object.name,
-          riskObjects: [object],
-        }),
-        0,
-      )
-      return
-    }
+	      setActiveStage('行业专题')
+	      setQuestion(prompt)
+	      setLastUserOperation(`选择行业单位：${object.name}`)
+	      return
+	    }
 
-    setSelectedObject(object)
-    setSelectedDistrict(object.district)
-    setActiveStage('行政区专题')
-    window.setTimeout(() => void runAI('object-click', `分析${object.name}的风险触发因素和处置建议`), 0)
-  }
+	    setSelectedObject(object)
+	    setSelectedDistrict(object.district)
+	    setActiveStage('行政区专题')
+	    setQuestion(`分析${object.name}的风险触发因素和处置建议`)
+	    setLastUserOperation(`选择风险对象：${object.name}`)
+	  }
 
   const handleTimelineAlertSelect = (object: RiskObject) => {
     if (object.id.startsWith('u-')) {
@@ -839,6 +679,45 @@ function App() {
     }
 
     setLastUserOperation(`点击告警闭环时间轴：${object.name}`)
+  }
+
+  const handleHeaderKpiAction = (action?: HeaderKpiAction) => {
+    if (!action) return
+    if (action.type === 'district') {
+      setActiveStage('总览')
+      setOverviewDistrict(action.district)
+      setSelectedDistrict(action.district)
+      setQuestion(`请分析${action.district}综合风险指数、风险来源和重点处置建议`)
+      setLastUserOperation(`点击顶部指标浮层行政区：${action.district}`)
+      return
+    }
+    if (action.type === 'object') {
+      const object = action.object
+      setSelectedObject(object)
+      setSelectedDistrict(object.district)
+      setSelectedIndustry(object.industry)
+      setSelectedIndustryDistrict(object.district)
+      setQuestion(`请分析${object.name}的顶部指标来源、风险证据和处置建议`)
+      setLastUserOperation(`点击顶部指标浮层对象：${object.name}`)
+      if (object.id.startsWith('u-')) {
+        setSelectedIndustryUnit(object)
+        setIndustryScope('unit')
+        setActiveStage('行业专题')
+        return
+      }
+      setActiveStage('行政区专题')
+      return
+    }
+    if (action.type === 'status') {
+      setActiveStage('总览')
+      const object = riskObjects.find((item) => item.status === action.status)
+      if (object) {
+        setSelectedObject(object)
+        setSelectedDistrict(object.district)
+      }
+      setQuestion(`请分析${action.status}对象的闭环质量、剩余风险和复核建议`)
+      setLastUserOperation(`点击顶部指标浮层状态：${action.status}`)
+    }
   }
 
   const handleGraphNodeSelect = (node: KnowledgeGraphNode) => {
@@ -998,6 +877,8 @@ function App() {
           setAspectMode={setAspectMode}
           criticalCount={criticalCount}
           highCount={highCount}
+          kpis={headerKpis}
+          onKpiDetailSelect={handleHeaderKpiAction}
           processingCount={processingCount}
         />
 
@@ -1324,31 +1205,42 @@ function App() {
 function Header({
   aspectMode,
   setAspectMode,
-  criticalCount,
-  highCount,
-  processingCount,
+  kpis,
+  onKpiDetailSelect,
 }: {
   aspectMode: AspectMode
   setAspectMode: (mode: AspectMode) => void
   criticalCount: number
   highCount: number
   processingCount: number
+  kpis: HeaderKpiDefinition[]
+  onKpiDetailSelect: (action?: HeaderKpiAction) => void
 }) {
+  const [activeKpiKey, setActiveKpiKey] = useState<HeaderKpiKey | ''>('')
+  const [pinnedKpiKey, setPinnedKpiKey] = useState<HeaderKpiKey | ''>('')
+
   return (
     <header className="command-header">
       <div className="brand-mark">
         <Siren size={26} />
         <div>
-          <span>上海消防</span>
+          <span className="brand-city">上海消防</span>
           <strong>风险智能监测预警中枢</strong>
         </div>
       </div>
       <div className="header-kpis">
-        <Kpi label="综合风险指数" value="86.4" tone="blue" />
-        <Kpi label="极高风险" value={String(criticalCount)} tone="red" />
-        <Kpi label="高风险" value={String(highCount)} tone="orange" />
-        <Kpi label="处置中" value={String(processingCount)} tone="cyan" />
-        <Kpi label="闭环率" value="87%" tone="green" />
+        {kpis.map((kpi) => (
+          <Kpi
+            key={kpi.key}
+            kpi={kpi}
+            active={activeKpiKey === kpi.key || pinnedKpiKey === kpi.key}
+            pinned={pinnedKpiKey === kpi.key}
+            onClick={() => setPinnedKpiKey((current) => (current === kpi.key ? '' : kpi.key))}
+            onDetailSelect={(detail) => onKpiDetailSelect(detail.action)}
+            onMouseEnter={() => setActiveKpiKey(kpi.key)}
+            onMouseLeave={() => setActiveKpiKey('')}
+          />
+        ))}
       </div>
       <div className="header-tools">
         <div className="status-chip"><RadioTower size={15} />物联在线 91.6%</div>
@@ -1369,11 +1261,50 @@ function Header({
   )
 }
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone: string }) {
+function Kpi({
+  kpi,
+  active,
+  pinned,
+  onClick,
+  onDetailSelect,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  kpi: HeaderKpiDefinition
+  active: boolean
+  pinned: boolean
+  onClick: () => void
+  onDetailSelect: (detail: HeaderKpiDetail) => void
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}) {
   return (
-    <div className={`kpi tone-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div
+      className={`kpi tone-${kpi.tone} ${active ? 'active' : ''} ${pinned ? 'pinned' : ''}`}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <button className="kpi-main" type="button" onClick={onClick}>
+        <span>{kpi.label}</span>
+        <strong>{kpi.value}</strong>
+      </button>
+      {active && (
+        <div className="kpi-popover">
+          <header>
+            <span>{pinned ? '已固定' : '数据明细'}</span>
+            <strong>{kpi.source}</strong>
+          </header>
+          <div className="kpi-popover-list">
+            {kpi.details.map((detail) => (
+              <button key={detail.id} type="button" onClick={() => onDetailSelect(detail)}>
+                <span>{detail.label}</span>
+                <strong>{detail.value}</strong>
+                <em>{detail.source}</em>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1516,7 +1447,20 @@ function AIPanel({
         <span><AudioLines size={14} />语音交互预留</span>
       </div>
       <div className="ai-result">
-        {loading && <p className="loading-text">AI 正在综合图层、对象、知识片段和处置状态...</p>}
+        {loading && (
+          <div className="ai-loading-overlay" aria-live="polite">
+            <div className="fire-cat-runway">
+              <span
+                className="fire-cat-sprite"
+                role="img"
+                aria-label="正在跑步的消防猫"
+                style={{ backgroundImage: `url(${firefighterCatRunCycle})` }}
+              />
+              <i />
+            </div>
+            <p className="loading-text">消防猫正在奔跑取数，AI 正在综合图层、对象、知识片段和处置状态...</p>
+          </div>
+        )}
         {!loading && result && (
           <>
             <strong>{result.summary}</strong>
@@ -1540,7 +1484,7 @@ function AIPanel({
             )}
           </>
         )}
-        {!loading && !result && <p>点击行政区、风险对象，或输入问题启动本地大模型研判。</p>}
+        {!loading && !result && <p>选择地图对象或控件后，点击研判按钮启动本地大模型分析。</p>}
       </div>
       {!!conversationHistory.length && (
         <div className="ai-conversation-mini">
@@ -2943,29 +2887,8 @@ function getLatestIncident(incidents: EmergencyIncident[]) {
   return sortIncidentsByTimeDesc(incidents)[0]
 }
 
-function stringArg(args: Record<string, unknown>, key: string) {
-  const value = args[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function executed(name: string, message: string): AIToolTrace {
-  return { name, status: 'executed', message }
-}
-
-function skipped(name: string, message: string): AIToolTrace {
-  return { name, status: 'skipped', message }
-}
-
-function isStageTab(value: string): value is StageTab {
-  return ['总览', '行政区专题', '行业专题', '应急处置', '安保模式', '知识图谱'].includes(value)
-}
-
 function isIndustrySelection(value: string): value is IndustrySelection {
   return value === '全部行业' || industryProfiles.some((profile) => profile.industry === value)
-}
-
-function isEmergencyTimePreset(value: string): value is EmergencyTimePreset {
-  return ['1月内', '3个月内', '1年内', '自定义'].includes(value)
 }
 
 function toggleValue(values: string[], value: string) {
@@ -2993,6 +2916,87 @@ function nodeTypeLabel(type: string) {
     metric: '指标',
   }
   return labels[type] || type
+}
+
+function buildHeaderKpis(
+  objects: RiskObject[],
+  districts: typeof districtShapes,
+  cityRiskScore: number,
+  closedRate: number,
+): HeaderKpiDefinition[] {
+  const criticalObjects = objects.filter((object) => object.riskLevel === 'critical')
+  const highObjects = objects.filter((object) => object.riskLevel === 'high')
+  const processingObjects = objects.filter((object) => object.status === '处置中')
+  const closedObjects = objects.filter((object) => object.status === '已闭环')
+  const topDistricts = districts.slice().sort((a, b) => b.riskScore - a.riskScore).slice(0, 5)
+
+  return [
+    {
+      key: 'risk-score',
+      label: '综合风险指数',
+      value: cityRiskScore.toFixed(1),
+      tone: 'blue',
+      source: '风险评估模型 + 行政区风险评分',
+      details: topDistricts.map((district) => ({
+        id: `district-${district.name}`,
+        label: district.name,
+        value: String(district.riskScore),
+        source: `上海行政区元数据 · 闭环率 ${district.closedRate}% · 物联在线 ${district.iotOnlineRate}%`,
+        action: { type: 'district', district: district.name },
+      })),
+    },
+    {
+      key: 'critical',
+      label: '极高风险',
+      value: String(criticalObjects.length),
+      tone: 'red',
+      source: '动态监测预警对象库',
+      details: criticalObjects.slice(0, 5).map((object) => objectDetail(object, '极高风险对象')),
+    },
+    {
+      key: 'high',
+      label: '高风险',
+      value: String(highObjects.length),
+      tone: 'orange',
+      source: '动态监测预警对象库',
+      details: highObjects.slice(0, 5).map((object) => objectDetail(object, '高风险对象')),
+    },
+    {
+      key: 'processing',
+      label: '处置中',
+      value: String(processingObjects.length),
+      tone: 'cyan',
+      source: '智能接处警系统 + 隐患处置状态',
+      details: processingObjects.slice(0, 5).map((object) => objectDetail(object, '当前处置对象')),
+    },
+    {
+      key: 'closed-rate',
+      label: '闭环率',
+      value: `${closedRate}%`,
+      tone: 'green',
+      source: '消防隐患排查系统 + 整改复查记录',
+      details: [
+        {
+          id: 'closed-summary',
+          label: '已闭环对象',
+          value: `${closedObjects.length}/${objects.length}`,
+          source: '原型风险对象库 · status=已闭环',
+          action: { type: 'status', status: '已闭环' },
+        },
+        ...closedObjects.slice(0, 4).map((object) => objectDetail(object, '已闭环对象')),
+      ],
+    },
+  ]
+}
+
+function objectDetail(object: RiskObject, sourceLabel: string): HeaderKpiDetail {
+  return {
+    id: object.id,
+    label: object.name,
+    value: `${object.district} · ${levelLabel[object.riskLevel]}`,
+    source: `${sourceLabel} · ${object.industry} · ${object.signals.slice(0, 2).join('、')}`,
+    action: { type: 'object', object },
+  }
 }
 
 function summarizeGraphNode(node: KnowledgeGraphNode) {

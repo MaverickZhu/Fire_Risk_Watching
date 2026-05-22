@@ -156,16 +156,19 @@ export function ThreeRiskMap({
     const isSecurityRingMode = isSecurityMode && securityTask?.taskType === 'event-ring'
     const isSecurityVenueScope = isSecurityRingMode && securityMapScope === 'venue'
     const isSecurityDistrictScope = isSecurityRingMode && securityMapScope === 'district'
-    const districtGroup = new THREE.Group()
-    const objectGroup = new THREE.Group()
-    const gridGroup = new THREE.Group()
-    const focusMode = isDistrictMode || isIndustryDistrictMode || isSecurityVenueScope || isSecurityDistrictScope
-    districtGroup.scale.setScalar(focusMode ? 1.25 : 1.12)
-    objectGroup.scale.setScalar(focusMode ? 1.25 : 1.12)
-    districtGroup.position.y = focusMode ? 0.1 : 0.45
-    objectGroup.position.y = focusMode ? 0.1 : 0.45
+	    const districtGroup = new THREE.Group()
+	    const objectGroup = new THREE.Group()
+	    const gridGroup = new THREE.Group()
+	    const securityRingGroup = new THREE.Group()
+	    const focusMode = isDistrictMode || isIndustryDistrictMode || isSecurityVenueScope || isSecurityDistrictScope
+	    districtGroup.scale.setScalar(focusMode ? 1.25 : 1.12)
+	    objectGroup.scale.setScalar(focusMode ? 1.25 : 1.12)
+	    securityRingGroup.scale.setScalar(focusMode ? 1.25 : 1.12)
+	    districtGroup.position.y = focusMode ? 0.1 : 0.45
+	    objectGroup.position.y = focusMode ? 0.1 : 0.45
+	    securityRingGroup.position.y = focusMode ? 0.1 : 0.45
 
-    scene.add(districtGroup, objectGroup, gridGroup)
+	    scene.add(districtGroup, objectGroup, securityRingGroup, gridGroup)
 
     const ambientLight = new THREE.AmbientLight('#7bbcff', 1.7)
     const keyLight = new THREE.DirectionalLight('#ffffff', 2.6)
@@ -251,11 +254,11 @@ export function ThreeRiskMap({
       districtEdges.set(feature.properties.name, edges)
     })
 
-    if (isSecurityMode && showSecurityRings && securityTask?.rings.length) {
-      createSecurityRings(securityTask, projection).forEach((ring) => {
-        districtGroup.add(ring)
-      })
-    }
+	    if (isSecurityMode && showSecurityRings && securityTask?.rings.length) {
+	      createSecurityRings(securityTask, projection).forEach((ring) => {
+	        securityRingGroup.add(ring)
+	      })
+	    }
 
     objectGroup.add(
       ...createObjects(
@@ -1163,6 +1166,7 @@ function createSecurityRings(task: SecurityTask, projection: Projector) {
   const children: THREE.Object3D[] = []
   const center = task.center
   const ringColors = ['#ff4d5d', '#ffd166']
+  const [centerX, centerY] = projection(center.lng, center.lat)
 
   task.rings.forEach((meters, index) => {
     const positions: number[] = []
@@ -1171,7 +1175,7 @@ function createSecurityRings(task: SecurityTask, projection: Projector) {
       const lng = center.lng + (Math.cos(angle) * meters) / (111000 * Math.cos((center.lat * Math.PI) / 180))
       const lat = center.lat + (Math.sin(angle) * meters) / 111000
       const [x, y] = projection(lng, lat)
-      positions.push(x, y, 0.42 + index * 0.04)
+      positions.push(x, y, 1.18 + index * 0.08)
     }
 
     const geometry = new THREE.BufferGeometry()
@@ -1180,17 +1184,46 @@ function createSecurityRings(task: SecurityTask, projection: Projector) {
       color: ringColors[index % ringColors.length],
       transparent: true,
       opacity: index === 0 ? 0.88 : 0.62,
+      depthTest: false,
+      depthWrite: false,
     })
     const ring = new THREE.Line(geometry, material)
+    ring.renderOrder = 20
     children.push(ring)
+
+    const ringFill = new THREE.Mesh(
+      new THREE.RingGeometry(
+        Math.max(0.02, distance2d([centerX, centerY], projection(
+          center.lng + ((meters * 0.94) / (111000 * Math.cos((center.lat * Math.PI) / 180))),
+          center.lat,
+        ))),
+        Math.max(0.04, distance2d([centerX, centerY], projection(
+          center.lng + ((meters * 1.02) / (111000 * Math.cos((center.lat * Math.PI) / 180))),
+          center.lat,
+        ))),
+        160,
+      ),
+      new THREE.MeshBasicMaterial({
+        color: ringColors[index % ringColors.length],
+        transparent: true,
+        opacity: index === 0 ? 0.12 : 0.08,
+        side: THREE.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    )
+    ringFill.position.set(centerX, centerY, 1.12 + index * 0.07)
+    ringFill.renderOrder = 18
+    children.push(ringFill)
 
     const [labelX, labelY] = projection(center.lng, center.lat + (meters / 111000))
     const label = createDistrictLabel(`${meters}米安保圈`, 'street')
-    label.position.set(labelX, labelY, 0.86 + index * 0.08)
+    label.position.set(labelX, labelY, 1.48 + index * 0.12)
+    label.renderOrder = 22
+    label.material.depthTest = false
     children.push(label)
   })
 
-  const [x, y] = projection(center.lng, center.lat)
   const venueGeometry = new THREE.CylinderGeometry(0.12, 0.26, 1.18, 8)
   const venueMaterial = new THREE.MeshStandardMaterial({
     color: '#ffd166',
@@ -1203,15 +1236,17 @@ function createSecurityRings(task: SecurityTask, projection: Projector) {
   })
   const venue = new THREE.Mesh(venueGeometry, venueMaterial)
   venue.rotation.x = Math.PI / 2
-  venue.position.set(x, y, 0.98)
+  venue.position.set(centerX, centerY, 1.34)
+  venue.renderOrder = 21
   children.push(venue)
 
   const venueHalo = new THREE.Mesh(
     new THREE.TorusGeometry(0.42, 0.016, 8, 64),
     new THREE.MeshBasicMaterial({ color: '#ffd166', transparent: true, opacity: 0.72, depthWrite: false }),
   )
-  venueHalo.position.set(x, y, 0.44)
+  venueHalo.position.set(centerX, centerY, 1.1)
   venueHalo.userData = { pulseRing: true }
+  venueHalo.renderOrder = 19
   children.push(venueHalo)
 
   return children
@@ -1487,6 +1522,10 @@ function applyCameraView(camera: THREE.PerspectiveCamera, zoomFactor: number, vi
     Math.sin(view.pitch) * distance,
   )
   camera.lookAt(0, 0.2, 0)
+}
+
+function distance2d(a: [number, number], b: [number, number]) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1])
 }
 
 function clamp(value: number, min: number, max: number) {
